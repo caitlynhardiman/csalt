@@ -3,7 +3,9 @@ import scipy.constants as sc
 import numpy as np
 from vis_sample.classes import SkyImage
 import matplotlib.pyplot as plt
-
+import os
+import subprocess
+import multiprocess
 
 def parametric_disk(velax, pars, pars_fixed, newcube):
 
@@ -17,8 +19,6 @@ def parametric_disk(velax, pars, pars_fixed, newcube):
 
     cube = model.lines[:, :, :]
 
-    print(len(x), len(y))
-
     for_csalt = SkyImage(np.transpose(cube), x, y, model.nu, None)
 
     return for_csalt
@@ -27,7 +27,11 @@ def parametric_disk(velax, pars, pars_fixed, newcube):
 
 def write_run_mcfost(inclination, stellar_mass, scale_height, r_c, r_in, flaring_exp, PA, dust_param, vturb):
     # Rewrite mcfost para file
-    print(inclination, stellar_mass, scale_height, r_c, r_in, flaring_exp, PA, dust_param, vturb)
+    pool_id = multiprocess.current_process()
+    pool_id = pool_id.pid
+    if os.path.isdir(str(pool_id)) == False:
+        subprocess.call("mkdir "+str(pool_id), shell = True)
+    #print(inclination, stellar_mass, scale_height, r_c, r_in, flaring_exp, PA, dust_param, vturb)
     updating = mcfost.Params('dmtau.para')
     updating.map.RT_imin = inclination+180
     updating.map.RT_imax = inclination+180
@@ -39,7 +43,11 @@ def write_run_mcfost(inclination, stellar_mass, scale_height, r_c, r_in, flaring
     updating.map.PA = PA
     updating.simu.viscosity = dust_param
     updating.mol.v_turb = vturb
-    updating.writeto('dmtau.para')    # Run mcfost
-    mcfost.run('dmtau.para', options="-mol -casa -photodissociation", delete_previous=True, logfile='mcfost.log')
-    model = mcfost.Line('data_CO/')
+    para = str(pool_id)+'/dmtau_'+str(pool_id)+'.para'
+    updating.writeto(para)
+    origin = os.getcwd()
+    os.chdir(str(pool_id))
+    mcfost.run('dmtau_'+str(pool_id)+'.para', options="-mol -casa -photodissociation", delete_previous=True, logfile='mcfost.log')
+    os.chdir(origin)
+    model = mcfost.Line(str(pool_id)+'/data_CO/')
     return model

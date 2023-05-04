@@ -115,9 +115,7 @@ def radmc_to_fits(path_to_image, fitsout, pars_fixed):
     skyim = SkyImage(mod_data, mod_ra, mod_dec, freq, None)
     foo = cube_to_fits(skyim, fitsout, 240., -30., restfreq=restfreq)
 
-    return 
-    
-
+    return
 
 
 def vismodel_full(pars, fixed, dataset, mtype='CSALT',
@@ -201,8 +199,12 @@ def vismodel_full(pars, fixed, dataset, mtype='CSALT',
         ixh = np.max(np.where(dataset.tstamp == itime)) + 1
 
         # sample it's Fourier transform on the template (u,v) spacings
-        mvis = vis_sample(imagefile=cube, uu=uu[ixl:ixh], vv=vv[ixl:ixh],
-                          mu_RA=pars[-2], mu_DEC=pars[-1], mod_interp=False).T
+        if mtype == 'MCFOST':
+            mvis = vis_sample(imagefile=cube, uu=uu[ixl:ixh], vv=vv[ixl:ixh],
+                              mod_interp=False).T
+        else:
+            mvis = vis_sample(imagefile=cube, uu=uu[ixl:ixh], vv=vv[ixl:ixh],
+                              mu_RA=pars[-2], mu_DEC=pars[-1], mod_interp=False).T
 
         # populate the results in the output array *for this timestamp only*
         mvis_[0,:,ixl:ixh,0] = mvis.real
@@ -253,7 +255,7 @@ def vismodel_full(pars, fixed, dataset, mtype='CSALT',
 
 def vismodel_def(pars, fixed, dataset, mtype='CSALT',
                  imethod='cubic', return_holders=False, chpad=6, 
-                 redo_RTimage=True, noise_inject=None):
+                 redo_RTimage=True, noise_inject=None, mcube=None):
 
     ### - Prepare inputs
     # Parse fixed parameters
@@ -261,19 +263,18 @@ def vismodel_def(pars, fixed, dataset, mtype='CSALT',
     npars = len(pars)
 
     # Load appropriate model for cube calculation
-    pd = importlib.import_module('parametric_disk_'+mtype)
+    pd = importlib.import_module('csalt.parametric_disk_'+mtype)
 
     # Spatial frequencies to lambda units
     uu = dataset.um * np.mean(dataset.nu_TOPO) / sc.c
     vv = dataset.vm * np.mean(dataset.nu_TOPO) / sc.c
 
     # Pad the frequency arrays
-#    dnu_TOPO = np.diff(dataset.nu_TOPO)[0]
-#    nu_TOPO_s = dataset.nu_TOPO[0] + dnu_TOPO * np.arange(-chpad, 0, 1)
-#    nu_TOPO_f = dataset.nu_TOPO[-1] + dnu_TOPO * np.arange(1, chpad+1, 1)
-#    nu_TOPO = np.concatenate((nu_TOPO_s, dataset.nu_TOPO, nu_TOPO_f))
+    dnu_TOPO = np.diff(dataset.nu_TOPO)[0]
+    nu_TOPO_s = dataset.nu_TOPO[0] + dnu_TOPO * np.arange(-chpad, 0, 1)
+    nu_TOPO_f = dataset.nu_TOPO[-1] + dnu_TOPO * np.arange(1, chpad+1, 1)
+    nu_TOPO = np.concatenate((nu_TOPO_s, dataset.nu_TOPO, nu_TOPO_f))
 
-    print(dataset.nu_LSRK.shape)
     dnu_LSRK = np.diff(dataset.nu_LSRK, axis=1)[:,0]
     nu_LSRK_s = (dataset.nu_LSRK[:,0])[:,None] + \
                 dnu_LSRK[:,None] * np.arange(-chpad, 0, 1)[None,:]
@@ -282,24 +283,31 @@ def vismodel_def(pars, fixed, dataset, mtype='CSALT',
     nu_LSRK = np.concatenate((nu_LSRK_s, dataset.nu_LSRK, nu_LSRK_f), axis=1)
 
     # LSRK velocities at midpoint of execution block
-    mid_stamp = np.int(nu_LSRK.shape[0] / 2)
+    mid_stamp = int(nu_LSRK.shape[0] / 2)
     v_model = sc.c * (1 - nu_LSRK[mid_stamp,:] / restfreq)
     v_grid = sc.c * (1 - nu_LSRK / restfreq)
 
     # generate a model cube
-    mcube = pd.parametric_disk(v_model, pars, fixed, newcube=redo_RTimage)
+    if mcube is None:
+        mcube = pd.parametric_disk(v_model, pars, fixed, newcube=redo_RTimage)
 
     # sample the FT of the cube onto the observed spatial frequencies
-    mvis_, gcf, corr = vis_sample(imagefile=mcube, uu=uu, vv=vv, 
+    if mtype == 'MCFOST':
+        mvis_, gcf, corr = vis_sample(imagefile=mcube, uu=uu, vv=vv, 
+                                      return_gcf=True, return_corr_cache=True, 
+                                      mod_interp=False)
+    else:
+        mvis_, gcf, corr = vis_sample(imagefile=mcube, uu=uu, vv=vv,
+                                  mu_RA=pars[-2], mu_DEC=pars[-1],
                                   return_gcf=True, return_corr_cache=True, 
                                   mod_interp=False)
+
     mvis_ = mvis_.T
 
     # distribute interpolates to different timestamps
     for itime in range(dataset.nstamps):
         ixl = np.min(np.where(dataset.tstamp == itime))
         ixh = np.max(np.where(dataset.tstamp == itime)) + 1
-        print(len(v_model), len(mvis_[:,ixl:ixh]))
         fint = interp1d(v_model, mvis_[:,ixl:ixh], axis=0, kind=imethod, 
                         fill_value='extrapolate')
         mvis_[:,ixl:ixh] = fint(v_grid[itime,:])
@@ -329,7 +337,7 @@ def vismodel_def(pars, fixed, dataset, mtype='CSALT',
         # populate both polarizations
         p_mvis = np.tile(p_mvis, (2, 1, 1))
 
-        return p_mvis, gcf, corr
+        return p_mvis, gcf, corr, mcube
 
     elif noise_inject is not None:
         # inject noise before SRF convolution 
@@ -357,7 +365,7 @@ def vismodel_def(pars, fixed, dataset, mtype='CSALT',
         return p_mvis
 
 
-def vismodel_iter(pars, fixed, dataset, gcf, corr, imethod='cubic', chpad=3, code='default'):
+def vismodel_iter(pars, fixed, dataset, gcf, corr, imethod='cubic', chpad=6, code='default', mcube=None):
 
     ### - Prepare inputs
     # Parse fixed parameters
@@ -378,18 +386,23 @@ def vismodel_iter(pars, fixed, dataset, gcf, corr, imethod='cubic', chpad=3, cod
     nu_LSRK = np.concatenate((nu_LSRK_s, dataset.nu_LSRK, nu_LSRK_f), axis=1)
 
     # LSRK velocities at midpoint of execution block
-    mid_stamp = np.int(dataset.nu_LSRK.shape[0] / 2)
+    mid_stamp = int(dataset.nu_LSRK.shape[0] / 2)
     v_model = sc.c * (1 - nu_LSRK[mid_stamp,:] / restfreq)
     v_grid = sc.c * (1 - nu_LSRK / restfreq)
 
     # generate a model cube
-    if code == 'mcfost':
-        mcube = par_disk_MCFOST(v_model, pars, fixed)
-    else:
-        mcube = par_disk_CSALT(v_model, pars, fixed)
+    if mcube is None:
+        if code == 'MCFOST':
+            mcube = par_disk_MCFOST(v_model, pars, fixed, newcube=None)
+        else:
+            mcube = par_disk_CSALT(v_model, pars, fixed)
 
     # sample the FT of the cube onto the observed spatial frequencies
-    mvis = vis_sample(imagefile=mcube, mu_RA=pars[-2], mu_DEC=pars[-1], 
+    if code == 'MCFOST':
+        mvis = vis_sample(imagefile=mcube, gcf_holder=gcf, corr_cache=corr, 
+                          mod_interp=False).T
+    else:
+        mvis = vis_sample(imagefile=mcube, mu_RA=pars[-2], mu_DEC=pars[-1], 
                       gcf_holder=gcf, corr_cache=corr, mod_interp=False).T
 
     # distribute interpolates to different timestamps
@@ -411,7 +424,7 @@ def vismodel_iter(pars, fixed, dataset, gcf, corr, imethod='cubic', chpad=3, cod
     mvis = np.tile(mvis, (2, 1, 1))
 
     # return the model visibilities
-    return mvis
+    return mvis, mcube
 
 
 
