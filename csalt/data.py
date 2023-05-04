@@ -127,8 +127,6 @@ def fitdata(datafile, vra=None, vcensor=None, nu_rest=230.538e9, chbin=2):
         ivis = idata.vis[:,ixl:ixh,:]
         iwgt = idata.wgt[:,ixl:ixh,:]
 
-        print(iv_LSRK.min(), iv_LSRK.max())
-
         # spectral binning
         bnchan = np.int(inchan / chbin[i])
         wt = iwgt.reshape((idata.npol, -1, chbin[i], idata.nvis))
@@ -172,6 +170,7 @@ def fitdata(datafile, vra=None, vcensor=None, nu_rest=230.538e9, chbin=2):
                odi * (np.eye(bnchan, k=-1) + np.eye(bnchan, k=1))
         scov_inv = np.linalg.inv(scov)
 
+
         # pre-calculate the log-likelihood normalization
         dterm = np.empty((idata.npol, idata.nvis))
         for ii in range(idata.nvis):
@@ -205,8 +204,6 @@ def HDF_to_dataset(HDF_in, grp=''):
 
     # Return a dataset object
     return dataset(_um, _vm, _vis, _wgts, _TOPO, _LSRK, _stmp)
-
-
 
 
 def dataset_to_HDF(dataset_in, HDF_out, append=False, groupname=None):

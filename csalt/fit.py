@@ -146,7 +146,6 @@ def run_sampler(mypool, mode, nwalk, ndim, steps, pos, backend):
     return sampler, t0, t1
 
 
-
 def run_emcee(datafile, fixed, code=None, vra=None, vcensor=None,
               nwalk=75, ninits=200, nsteps=1000, chbin=3,
               outfile='stdout.h5', append=False, mode='iter', nthreads=6,
