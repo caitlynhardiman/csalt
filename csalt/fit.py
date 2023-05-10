@@ -13,6 +13,49 @@ import scipy.constants as sc
 from multiprocessing import Pool
 from schwimmbad import MPIPool
 
+# reduced chi squared calculator
+def redchi(theta, code='default'):
+
+    # compute the log-prior and return if problematic
+    lnT = np.sum(logprior(theta)) * data_['nobs']
+    if lnT == -np.inf:
+        return -np.inf, -np.inf
+
+    # loop through observations to compute the reduced chi squared
+    chi = 0
+    mcube = None
+    for EB in range(data_['nobs']):
+
+        # get the inference dataset
+        dat = data_[str(EB)]
+
+        # calculate model visibilities
+        if EB == 0 or mcube is None:
+            mvis, mcube = vismodel_iter(theta, fixed_, dat,
+                             data_['gcf'+str(EB)], data_['corr'+str(EB)], code=code_)
+        else:
+            mvis, mcube = vismodel_iter(theta, fixed_, dat,
+                             data_['gcf'+str(EB)], data_['corr'+str(EB)], code=code_,
+                             mcube=mcube)
+
+        # spectrally bin the model
+        wt = dat.iwgt.reshape((dat.npol, -1, dat.chbin, dat.nvis))
+        mvis_b = np.average(mvis.reshape((dat.npol, -1, dat.chbin,
+                                          dat.nvis)), weights=wt, axis=2)
+
+
+        # compute the residuals (stack both pols)
+        resid = np.hstack(np.absolute(dat.vis - mvis_b))
+        var = np.hstack(dat.wgt)
+        print('resid: ', resid.shape())
+
+        # compute the reduced chi squared
+        err = np.dot(dat.inv_cov, var * resid)
+        print('err: ', err.shape())
+        chi += np.sum(resid**2/err**2)/(len(resid)-1)
+
+    # return the log-posterior and log-prior
+    return chi + lnT, lnT
 
 # log-posterior calculator
 def lnprob(theta, code='default'):
