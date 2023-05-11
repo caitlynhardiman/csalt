@@ -17,9 +17,12 @@ def parametric_disk(velax, pars, pars_fixed, newcube):
     x = model.pixelscale * (np.arange(model.nx) - model.cx +1)
     y = model.pixelscale * (np.arange(model.ny) - model.cy +1)
 
-    cube = model.lines[:, :, :]
+    im_cube = model.lines[:, :, :]
 
-    for_csalt = SkyImage(np.transpose(cube), x, y, model.nu, None)
+    # Re-orient cube array
+    cube = np.rollaxis(im_cube, 0, 3)
+    
+    for_csalt = SkyImage(cube, x, y, model.nu, None)
 
     return for_csalt
 
@@ -32,7 +35,7 @@ def write_run_mcfost(inclination, stellar_mass, scale_height, r_c, r_in, flaring
     if os.path.isdir(str(pool_id)) == False:
         subprocess.call("mkdir "+str(pool_id), shell = True)
     #print(inclination, stellar_mass, scale_height, r_c, r_in, flaring_exp, PA, dust_param, vturb)
-    updating = mcfost.Params('dmtau.para')
+    updating = mcfost.Params('csalt.para')
     updating.map.RT_imin = inclination+180
     updating.map.RT_imax = inclination+180
     updating.stars[0].M = stellar_mass
@@ -43,11 +46,11 @@ def write_run_mcfost(inclination, stellar_mass, scale_height, r_c, r_in, flaring
     updating.map.PA = PA
     updating.simu.viscosity = dust_param
     updating.mol.v_turb = vturb
-    para = str(pool_id)+'/dmtau_'+str(pool_id)+'.para'
+    para = str(pool_id)+'/csalt_'+str(pool_id)+'.para'
     updating.writeto(para)
     origin = os.getcwd()
     os.chdir(str(pool_id))
-    mcfost.run('dmtau_'+str(pool_id)+'.para', options="-mol -casa -photodissociation", delete_previous=True, logfile='mcfost.log')
+    mcfost.run('csalt_'+str(pool_id)+'.para', options="-mol -casa -photodissociation", delete_previous=True, logfile='mcfost.log')
     os.chdir(origin)
     model = mcfost.Line(str(pool_id)+'/data_CO/')
     return model
