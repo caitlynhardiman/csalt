@@ -28,24 +28,34 @@ def parametric_disk(velax, pars, pars_fixed, newcube):
 
 
 
-def write_run_mcfost(inclination, stellar_mass, scale_height, r_c, r_in, flaring_exp, PA, dust_param, vturb):
+def write_run_mcfost(inclination=None, stellar_mass=None, scale_height=None,
+                     r_c=None, r_in=None, flaring_exp=None, PA=None, dust_param=None,
+                     vturb=None):
     # Rewrite mcfost para file
     pool_id = multiprocess.current_process()
     pool_id = pool_id.pid
     if os.path.isdir(str(pool_id)) == False:
         subprocess.call("mkdir "+str(pool_id), shell = True)
-    #print(inclination, stellar_mass, scale_height, r_c, r_in, flaring_exp, PA, dust_param, vturb)
     updating = mcfost.Params('csalt.para')
-    updating.map.RT_imin = inclination+180
-    updating.map.RT_imax = inclination+180
-    updating.stars[0].M = stellar_mass
-    updating.zones[0].h0 = scale_height
-    updating.zones[0].Rc = r_c
-    updating.zones[0].Rin = r_in
-    updating.zones[0].flaring_exp = flaring_exp
-    updating.map.PA = PA
-    updating.simu.viscosity = dust_param
-    updating.mol.v_turb = vturb
+    if inclination is not None:
+        updating.map.RT_imin = inclination+180
+        updating.map.RT_imax = inclination+180
+    if stellar_mass is not None:
+        updating.stars[0].M = stellar_mass
+    if scale_height is not None:
+        updating.zones[0].h0 = scale_height
+    if r_c is not None:
+        updating.zones[0].Rc = r_c
+    if r_in is not None:
+        updating.zones[0].Rin = r_in
+    if flaring_exp is not None:
+        updating.zones[0].flaring_exp = flaring_exp
+    if PA is not None:
+        updating.map.PA = PA
+    if dust_param is not None:
+        updating.simu.viscosity = dust_param
+    if vturb is not None:
+        updating.mol.v_turb = vturb
     para = str(pool_id)+'/csalt_'+str(pool_id)+'.para'
     updating.writeto(para)
     origin = os.getcwd()
