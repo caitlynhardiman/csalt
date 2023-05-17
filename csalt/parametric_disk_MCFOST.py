@@ -10,9 +10,8 @@ import multiprocess
 def parametric_disk(velax, pars, pars_fixed, newcube):
 
     restfreq, FOV, npix, dist, cfg_dict = pars_fixed  # these need to come in somewhere, right now they are manually in the para file
-    inc, mass, h, rc, rin, psi, pa, dust_param, vturb = pars
 
-    model = write_run_mcfost(inc, mass, h, rc, rin, psi, pa, dust_param, vturb)
+    model = write_run_mcfost(pars)
 
     x = model.pixelscale * (np.arange(model.nx) - model.cx +1)
     y = model.pixelscale * (np.arange(model.ny) - model.cy +1)
