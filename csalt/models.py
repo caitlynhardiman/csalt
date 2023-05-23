@@ -19,6 +19,7 @@ from astropy.io import fits, ascii
 from csalt.parametric_disk_CSALT import parametric_disk as par_disk_CSALT
 from csalt.parametric_disk_FITS import parametric_disk as par_disk_FITS
 from csalt.parametric_disk_MCFOST import parametric_disk as par_disk_MCFOST
+from csalt.parametric_disk_MCFOST_SMALL import parametric_disk as par_disk_MCFOST_SMALL
 
 def cube_to_fits(sky_image, fitsout, RA=0., DEC=0., restfreq=230.538e9):
 
@@ -199,7 +200,7 @@ def vismodel_full(pars, fixed, dataset, mtype='CSALT',
         ixh = np.max(np.where(dataset.tstamp == itime)) + 1
 
         # sample it's Fourier transform on the template (u,v) spacings
-        if mtype == 'MCFOST':
+        if mtype == 'MCFOST' or 'MCFOST_SMALL':
             mvis = vis_sample(imagefile=cube, uu=uu[ixl:ixh], vv=vv[ixl:ixh],
                               mod_interp=False).T
         else:
@@ -285,6 +286,7 @@ def vismodel_def(pars, fixed, dataset, mtype='CSALT',
     # LSRK velocities at midpoint of execution block
     mid_stamp = int(nu_LSRK.shape[0] / 2)
     v_model = sc.c * (1 - nu_LSRK[mid_stamp,:] / restfreq)
+    #print(v_model)
     v_grid = sc.c * (1 - nu_LSRK / restfreq)
 
     # generate a model cube
@@ -292,7 +294,7 @@ def vismodel_def(pars, fixed, dataset, mtype='CSALT',
         mcube = pd.parametric_disk(v_model, pars, fixed, newcube=redo_RTimage)
 
     # sample the FT of the cube onto the observed spatial frequencies
-    if mtype == 'MCFOST':
+    if mtype == 'MCFOST' or 'MCFOST_SMALL':
         mvis_, gcf, corr = vis_sample(imagefile=mcube, uu=uu, vv=vv, 
                                       return_gcf=True, return_corr_cache=True, 
                                       mod_interp=False)
@@ -394,16 +396,22 @@ def vismodel_iter(pars, fixed, dataset, gcf, corr, imethod='cubic', chpad=6, cod
     if mcube is None:
         if code == 'MCFOST':
             mcube = par_disk_MCFOST(v_model, pars, fixed, newcube=None)
+        elif code == 'MCFOST_SMALL':
+            mcube = par_disk_MCFOST_SMALL(v_model, pars, fixed, newcube=None)
         else:
             mcube = par_disk_CSALT(v_model, pars, fixed)
 
+    t0 = time.time()
     # sample the FT of the cube onto the observed spatial frequencies
-    if code == 'MCFOST':
+    if code == 'MCFOST' or 'MCFOST_SMALL':
         mvis = vis_sample(imagefile=mcube, gcf_holder=gcf, corr_cache=corr, 
-                          mod_interp=False).T
+                          mod_interp=False, verbose=False).T
     else:
         mvis = vis_sample(imagefile=mcube, mu_RA=pars[-2], mu_DEC=pars[-1], 
                       gcf_holder=gcf, corr_cache=corr, mod_interp=False).T
+    
+    t1 = time.time()
+    #print('TOTAL VIS SAMPLING: ', t1-t0)
 
     # distribute interpolates to different timestamps
     for itime in range(dataset.nstamps):
@@ -413,12 +421,18 @@ def vismodel_iter(pars, fixed, dataset, gcf, corr, imethod='cubic', chpad=6, cod
                         fill_value='extrapolate')
         mvis[:,ixl:ixh] = fint(v_grid[itime,:])
 
+    t2 = time.time()
+    #print('INTERPOLATING: ', t2-t1)
+
     # convolve with the SRF
     SRF_kernel = np.array([0, 0.25, 0.5, 0.25, 0])
     mvis_re = convolve1d(mvis.real, SRF_kernel, axis=0, mode='nearest')
     mvis_im = convolve1d(mvis.imag, SRF_kernel, axis=0, mode='nearest')
     mvis = mvis_re + 1.0j*mvis_im
     mvis = mvis[chpad:-chpad,:]
+
+    t3 = time.time()
+    #print('CONVOLVING: ', t3-t2)
 
     # populate both polarizations
     mvis = np.tile(mvis, (2, 1, 1))

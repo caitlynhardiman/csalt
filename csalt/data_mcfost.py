@@ -65,8 +65,8 @@ class inf_dataset:
 
 
 # Data parsing to generate inputs for likelihood function
-def fitdata(datafile, vra=None, vcensor=None, nu_rest=230.538e9, chbin=2):
-
+def fitdata(datafile, vra=None, vcensor=None, nu_rest=230.538e9, chbin=3):
+    print('fitdata mcfost')
     global bwgt
     global scov
 
@@ -188,12 +188,12 @@ def fitdata(datafile, vra=None, vcensor=None, nu_rest=230.538e9, chbin=2):
                     ixh = ixl + min_nchan
              
             # clip the data to cover only the frequencies of interest
-            inu_TOPO = idata.nu_TOPO[ixl:ixh+1]
-            inu_LSRK = idata.nu_LSRK[:,ixl:ixh+1]
-            iv_LSRK = v_LSRK[:,ixl:ixh+1]
+            inu_TOPO = idata.nu_TOPO[ixl:ixh]
+            inu_LSRK = idata.nu_LSRK[:,ixl:ixh]
+            iv_LSRK = v_LSRK[:,ixl:ixh]
             inchan = inu_LSRK.shape[1]      
-            ivis = idata.vis[:,ixl:ixh+1,:]
-            iwgt = idata.wgt[:,ixl:ixh+1,:]
+            ivis = idata.vis[:,ixl:ixh,:]
+            iwgt = idata.wgt[:,ixl:ixh,:]
             #print("ivis size: ", ivis.shape, ", iwgt size: ", iwgt.shape)
 
             # spectral binning

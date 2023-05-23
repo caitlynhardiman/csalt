@@ -29,15 +29,18 @@ def plot(data_, fixed_, code_, theta, mcube=None):
             coord = np.sqrt(dat.um[idx]**2 + dat.vm[idx]**2)
             deprojected_baseline.append(coord)
 
+        yerr = 1/np.sqrt(wt[0][50][0][:51])
+
         plt.figure()
-        plt.scatter(deprojected_baseline, np.real(dat.vis[0][150]), label='data')
-        plt.scatter(deprojected_baseline, np.real(mvis_b[0][150]), label='model')
+        plt.errorbar(deprojected_baseline[:51], np.real(dat.vis[0][50][:51]), yerr=yerr, ls='None', color='blue')
+        plt.scatter(deprojected_baseline[:51], np.real(dat.vis[0][50][:51]), label='data', color='blue')
+        plt.scatter(deprojected_baseline[:51], np.real(mvis_b[0][50][:51]), label='model', color='orange')
         plt.xlabel('Deprojected Baseline')
         plt.ylabel('Visibility')
         plt.legend()
-        imgname = 'residplots/residuals'+str(EB)+'.png'
+        imgname = 'residuals'+str(EB)+'.png'
         plt.savefig(imgname)
         #plt.show()
         plt.close()
       
-        return mcube
+    return mcube
