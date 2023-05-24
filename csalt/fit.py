@@ -14,7 +14,10 @@ from multiprocessing import Pool
 from schwimmbad import MPIPool
 
 # log-posterior calculator
-def lnprob(theta, code_='default'):
+def lnprob(theta, code_='default', single=False):
+
+    if single:
+        from csalt.fit_mcfost import data_, fixed_
 
     # compute the log-prior and return if problematic
     lnT = np.sum(logprior(theta)) * data_['nobs']

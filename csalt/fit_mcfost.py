@@ -3,6 +3,8 @@ import os, sys
 from csalt import *
 from schwimmbad import MPIPool
 
+data_ = None
+fixed_ = None
 # Class definition
 
 class setup_fit():
@@ -132,8 +134,12 @@ class setup_fit():
         Returns the log probability of a specific theta array fitting the data
         Need to run initialise function first
         """
-                
-        log_posterior, log_prior = lnprob(theta, data, self.fixed, code_=self.mtype)
+        
+        global data_
+        global fixed_
+        data_ = data
+        fixed_ = self.fixed      
+        log_posterior, log_prior = lnprob(theta, code_=self.mtype, single=True)
         return log_posterior, log_prior
     
     
