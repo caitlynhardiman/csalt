@@ -5,7 +5,6 @@ import pdb
 import scipy.constants as sc
 import multiprocessing
 from multiprocessing import Pool, Manager
-os.system('export OMP_NUM_THREADS=1')
 
 # General visibility dataset object
 class dataset:

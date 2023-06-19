@@ -11,13 +11,10 @@ import corner
 from scipy import stats
 import scipy.constants as sc
 from multiprocessing import Pool
-from schwimmbad import MPIPool
+
 
 # log-posterior calculator
-def lnprob(theta, code_='default', single=False):
-
-    if single:
-        from csalt.fit_mcfost import data_, fixed_
+def lnprob(theta, code_='default'):
 
     # compute the log-prior and return if problematic
     lnT = np.sum(logprior(theta)) * data_['nobs']
@@ -53,6 +50,10 @@ def lnprob(theta, code_='default', single=False):
 
         # compute the log-likelihood
         lnL += -0.5 * np.tensordot(resid, np.dot(dat.inv_cov, var * resid))
+        if np.isnan(lnL):
+            print('NaN time - lnL')
+            print('resid', resid)
+
 
     # return the log-posterior and log-prior
     return lnL + dat.lnL0 + lnT, lnT
@@ -119,40 +120,39 @@ def lnprob_naif_wdoppcorr(theta):
     return lnL + dat.lnL0 + lnT, lnT
 
 
-def run_sampler(mypool, mode, nwalk, ndim, steps, pos, backend, code):
+def run_sampler(mode, nwalk, ndim, steps, pos, backend, code, pool):
     if mode == 'naif':
         print('\n Note: running in naif mode... \n')
-        with mypool as pool:
-            sampler = emcee.EnsembleSampler(nwalk, ndim, lnprob_naif,
-                                            pool=pool, backend=backend, kwargs={"code_": code})
-            t0 = time.time()
-            sampler.run_mcmc(pos, steps, progress=True)
+        sampler = emcee.EnsembleSampler(nwalk, ndim, lnprob_naif,
+                                        pool=pool, backend=backend, kwargs={"code_": code})
+        t0 = time.time()
+        sampler.run_mcmc(pos, steps, progress=True)
         t1 = time.time()
     elif mode == 'naif_wdoppcorr':
         print('\n Note: running in naif mode with doppler correction... \n')
-        with mypool as pool:
-            sampler = emcee.EnsembleSampler(nwalk, ndim,
-                                            lnprob_naif_wdoppcorr,
-                                            pool=pool, backend=backend,
-                                            kwargs={"code_": code})
-            t0 = time.time()
-            sampler.run_mcmc(pos, steps, progress=True)
+        sampler = emcee.EnsembleSampler(nwalk, ndim,
+                                        lnprob_naif_wdoppcorr,
+                                        pool=pool, backend=backend,
+                                        kwargs={"code_": code})
+        t0 = time.time()
+        sampler.run_mcmc(pos, steps, progress=True)
         t1 = time.time()
     else:
-        with mypool as pool:
-            sampler = emcee.EnsembleSampler(nwalk, ndim, lnprob, pool=pool,
-                                            backend=backend, kwargs={"code_": code})
-            t0 = time.time()
-            sampler.run_mcmc(pos, steps, progress=True)
+        print('2')
+        sampler = emcee.EnsembleSampler(nwalk, ndim, lnprob, pool=pool,
+                                        backend=backend, kwargs={"code_": code})
+        t0 = time.time()
+        print('Running MCMC')
+        sampler.run_mcmc(pos, steps, progress=True)
         t1 = time.time()
 
     return sampler, t0, t1
-
+   
 
 def run_emcee(datafile, fixed, code=None, vra=None, vcensor=None,
               nwalk=75, ninits=200, nsteps=1000, chbin=3,
               outfile='stdout.h5', append=False, mode='iter', nthreads=6,
-              mpi=False, theta=None):
+              mpi=False):
 
 
     # load the data
@@ -171,41 +171,45 @@ def run_emcee(datafile, fixed, code=None, vra=None, vcensor=None,
     global fixed_
     fixed_ = fixed
 
+    #set_globals(data_, fixed_)
+
     # initialize parameters using random draws from the priors
     ndim = len(pri_pars)
     p0 = init_priors(ndim, nwalk)
 
-    print('Priors initialised')
+    print(ndim, ' Priors initialised')
 
     data_ = build_cache(p0, data_, fixed_, code=code, mode=mode)
 
     print('Preliminary models run')
 
-    # this is to see the log probability of a specific model and cancels run
-    if theta is not None:
-        log_post, log_pri = lnprob(theta, code=code)
-        print(log_post, log_pri)
-        return log_post, log_pri
-
+    # mpi pool or multiprocess pool
+    pool = None
+    if mpi:
+        from schwimmbad import MPIPool
+        from mpi4py import MPI
+        pool = MPIPool()
+        if not pool.is_master():
+            pool.wait()
+            sys.exit(0)
+    else:
+        print(nthreads)
+        pool = Pool(processes=nthreads)
 
     # Configure backend for recording posterior samples
     post_file = outfile
     if not append:
         # run to initialize
-        if mpi:
-            pool = MPIPool()
-        else:
-            pool = Pool(processes=nthreads)
-        isampler, t0, t1 = run_sampler(pool, mode, nwalk, ndim, ninits, p0, backend=None,
-                                       code=code)
-        pool.close()
+
+        isampler, t0, t1 = run_sampler(mode, nwalk, ndim, ninits, p0, backend=None,
+                                       code=code, pool=pool)
 
         print('Backend configured in %.2f hours' % ((t1 - t0) / 3600))
 
         # reset initialization to more compact distributions
         # this does random, uniform draws from the inner quartiles of the
         # walker distributions at the end initialization step (effectively
-	# pruning outlier walkers stuck far from the mode)
+	    # pruning outlier walkers stuck far from the mode)
         isamples = isampler.get_chain()	  # [ninits, nwalk, ndim]-shaped
         lop0 = np.quantile(isamples[-1, :, :], 0.25, axis=0)
         hip0 = np.quantile(isamples[-1, :, :], 0.75, axis=0)
@@ -218,24 +222,14 @@ def run_emcee(datafile, fixed, code=None, vra=None, vcensor=None,
         backend.reset(nwalk, ndim)
 
         # run the MCMC
-        if mpi:
-            pool = MPIPool()
-        else:
-            pool = Pool(processes=nthreads)
-        sampler, t0, t1 = run_sampler(pool, mode, nwalk, ndim, nsteps, p00, backend, code)
-        pool.close()
+        sampler, t0, t1 = run_sampler(mode, nwalk, ndim, nsteps, p00, backend, code, pool)
 
     else:
         new_backend = emcee.backends.HDFBackend(post_file)
         print("Initial size: {0}".format(new_backend.iteration))
 
-        if mpi:
-            pool = MPIPool()
-        else:
-            pool = Pool(processes=nthreads)
-        mew_sampler, t0, t1 = run_sampler(pool, mode, nwalk, ndim, nsteps-new_backend.iteration, 
-                                          pos=None, backend=new_backend, code=code)
-        pool.close()
+        new_sampler, t0, t1 = run_sampler(mode, nwalk, ndim, nsteps-new_backend.iteration, 
+                                          pos=None, backend=new_backend, code=code, pool=pool)
         print("Final size: {0}".format(new_backend.iteration))
 
     print(' ')
@@ -253,6 +247,7 @@ def post_summary(p, prec=0.1, mu='peak', CIlevs=[84.135, 15.865, 50.]):
     if (mu == 'peak'):
         kde_p = stats.gaussian_kde(p)
         ndisc = int(np.round((CI_p[0] - CI_p[1]) / prec))
+        print(ndisc)
         x_p = np.linspace(CI_p[1], CI_p[0], ndisc)
         pk_p = x_p[np.argmax(kde_p.evaluate(x_p))]
     else:
@@ -397,7 +392,7 @@ def post_analysis_mcfost(outfile, burnin=0, autocorr=False, Ntau=200,
     nsteps, nwalk, ndim = samples.shape
 
     # set parameter labels, truths (NOT HARDCODE!)
-    lbls = ['incl', 'M', 'h', 'rc', 'rin', 'psi', 'PA', 'dust a', 'vturb']
+    lbls = ['incl', 'M', 'h', 'rc', 'rin', 'psi', 'PA', 'dust a', 'vturb', 'dust mass', 'g/d mass ratio']
 
 
     # Plot the integrated autocorrelation time every Ntau steps
@@ -492,7 +487,7 @@ def post_analysis_mcfost(outfile, burnin=0, autocorr=False, Ntau=200,
 
     # Parameter inferences (1-D marginalized)
     print(' ')
-    prec = [0.1, 0.01, 0.1, 0.1, 0.1, 0.001, 0.1, 0.0001, 0.001]
+    prec = [0.1, 0.01, 0.1, 0.1, 0.1, 0.001, 0.1, 0.0001, 0.001, 0.000001, 0.1]
     for idim in range(ndim):
         fmt = '{:.'+str(np.abs(int(np.log10(prec[idim]))))+'f}'
         pk, hi, lo, med = post_summary(samples_[:,idim], prec=prec[idim])
@@ -620,6 +615,7 @@ def build_cache(p0, data_, fixed_, code, mode=None):
 
     mcube = None
     for EB in range(data_['nobs']):
+        print('lnL0 = ', data_[str(EB)].lnL0)
 
         # initial model calculations
         if mode == 'naif':
@@ -662,3 +658,12 @@ def init_priors(ndim, nwalk):
         else:
             raise NameError('Prior type unaccounted for')
     return p0
+
+def set_globals(data, fixed):
+    print('yes here')
+    global data_
+    global fixed_
+    data_ = data
+    fixed_ = fixed
+
+    return

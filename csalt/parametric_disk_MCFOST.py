@@ -14,8 +14,8 @@ def parametric_disk(velax, pars, pars_fixed, newcube):
     if isinstance(pars, dict):
         model = write_run_mcfost(**pars)
     else:
-        inc, m, h, rc, rin, psi, PA, dust_a, vturb = pars
-        model = write_run_mcfost(inc, m, h, rc, rin, psi, PA, dust_a, vturb)
+        inc, m, h, rc, rin, psi, PA, dust_a, vturb, dust_mass, gasdust_ratio = pars
+        model = write_run_mcfost(inc, m, h, rc, rin, psi, PA, dust_a, vturb, dust_mass, gasdust_ratio)
 
     x = model.pixelscale * (np.arange(model.nx) - model.cx +1)
     y = model.pixelscale * (np.arange(model.ny) - model.cy +1)
@@ -33,7 +33,7 @@ def parametric_disk(velax, pars, pars_fixed, newcube):
 
 def write_run_mcfost(inclination=None, stellar_mass=None, scale_height=None,
                      r_c=None, r_in=None, flaring_exp=None, PA=None, dust_param=None,
-                     vturb=None):
+                     vturb=None, dust_mass=None, gasdust_ratio=None):
     # Rewrite mcfost para file
     pool_id = multiprocess.current_process()
     pool_id = pool_id.pid
@@ -59,6 +59,10 @@ def write_run_mcfost(inclination=None, stellar_mass=None, scale_height=None,
         updating.simu.viscosity = dust_param
     if vturb is not None:
         updating.mol.v_turb = vturb
+    if dust_mass is not None:
+        updating.zones[0].dust_mass = dust_mass
+    if gasdust_ratio is not None:
+        updating.zones[0].gas_to_dust_ratio = gasdust_ratio
     para = str(pool_id)+'/csalt_'+str(pool_id)+'.para'
     updating.writeto(para)
     origin = os.getcwd()
