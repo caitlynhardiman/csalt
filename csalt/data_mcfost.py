@@ -179,8 +179,8 @@ def fitdata(datafile, vra=None, vcensor=None, nu_rest=230.538e9, chbin=3):
             ixl = np.abs(v_LSRK[midstamp,:] - vra[0]).argmin()
             ixh = np.abs(v_LSRK[midstamp,:] - vra[1]).argmin()
             if (ixh-ixl) != min_nchan:
-                diff_lower = np.abs(ixl - vra[0])
-                diff_higher = np.abs(ixh - vra[1])
+                diff_lower = np.abs(v_LSRK[midstamp, ixl] - vra[0])
+                diff_higher = np.abs(v_LSRK[midstamp, ixh] - vra[1])
                 if diff_lower > diff_higher:
                     ixl = ixh - min_nchan
                 else:
@@ -194,6 +194,9 @@ def fitdata(datafile, vra=None, vcensor=None, nu_rest=230.538e9, chbin=3):
             ivis = idata.vis[:,ixl:ixh,:]
             iwgt = idata.wgt[:,ixl:ixh,:]
             #print("ivis size: ", ivis.shape, ", iwgt size: ", iwgt.shape)
+
+            print('Min: ', v_LSRK[midstamp, ixl])
+            print('Max: ', v_LSRK[midstamp, ixh])
 
             # spectral binning
             print("spectral binning time")
@@ -262,7 +265,8 @@ def fitdata(datafile, vra=None, vcensor=None, nu_rest=230.538e9, chbin=3):
             else:
                 input_args = [(ii, jj) for ii in range(idata.nvis) for jj in range(idata.npol)]
 
-                with Pool(30) as p:
+
+                with Pool() as p:
                     print("Starting multiprocessing")
                     results = p.map(determinant, input_args)
 
@@ -288,6 +292,7 @@ def fitdata(datafile, vra=None, vcensor=None, nu_rest=230.538e9, chbin=3):
             out_dict[str(i)] = inf_dataset(idata.um, idata.vm, bvis, bwgt,
                                            inu_TOPO, inu_LSRK, idata.tstamp, iwgt,
                                            scov, scov_inv, lnL0)
+            
 
     # return the output dictionary
     return out_dict

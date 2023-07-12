@@ -256,7 +256,7 @@ def vismodel_full(pars, fixed, dataset, mtype='CSALT',
 
 def vismodel_def(pars, fixed, dataset, mtype='CSALT',
                  imethod='cubic', return_holders=False, chpad=6, 
-                 redo_RTimage=True, noise_inject=None, mcube=None):
+                 redo_RTimage=True, noise_inject=None, mcube=None, param=None):
 
     ### - Prepare inputs
     # Parse fixed parameters
@@ -289,9 +289,13 @@ def vismodel_def(pars, fixed, dataset, mtype='CSALT',
     #print(v_model)
     v_grid = sc.c * (1 - nu_LSRK / restfreq)
 
+    if param is not None:
+        param_dict = {param: pars[0]}
+        pars = param_dict
+
     # generate a model cube
     if mcube is None:
-        mcube = pd.parametric_disk(v_model, pars, fixed, newcube=redo_RTimage)
+        mcube = pd.parametric_disk(v_model, pars, fixed)
 
     # sample the FT of the cube onto the observed spatial frequencies
     if mtype == 'MCFOST' or 'MCFOST_SMALL':
@@ -367,7 +371,7 @@ def vismodel_def(pars, fixed, dataset, mtype='CSALT',
         return p_mvis
 
 
-def vismodel_iter(pars, fixed, dataset, gcf, corr, imethod='cubic', chpad=6, code='default', mcube=None):
+def vismodel_iter(pars, fixed, dataset, gcf, corr, imethod='cubic', chpad=6, code='default', mcube=None, mpi=False, param=None):
 
     ### - Prepare inputs
     # Parse fixed parameters
@@ -392,10 +396,14 @@ def vismodel_iter(pars, fixed, dataset, gcf, corr, imethod='cubic', chpad=6, cod
     v_model = sc.c * (1 - nu_LSRK[mid_stamp,:] / restfreq)
     v_grid = sc.c * (1 - nu_LSRK / restfreq)
 
+    if param is not None:
+        param_dict = {param: pars[0]}
+        pars = param_dict
+
     # generate a model cube
     if mcube is None:
         if code == 'MCFOST':
-            mcube = par_disk_MCFOST(v_model, pars, fixed, newcube=None)
+            mcube = par_disk_MCFOST(v_model, pars, fixed, mpi)
         elif code == 'MCFOST_SMALL':
             mcube = par_disk_MCFOST_SMALL(v_model, pars, fixed, newcube=None)
         else:

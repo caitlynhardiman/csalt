@@ -7,15 +7,15 @@ import os
 import subprocess
 import multiprocess
 
-def parametric_disk(velax, pars, pars_fixed, newcube):
+def parametric_disk(velax, pars, pars_fixed, mpi=False):
 
     restfreq, FOV, npix, dist, cfg_dict = pars_fixed  # these need to come in somewhere, right now they are manually in the para file
     
     if isinstance(pars, dict):
-        model = write_run_mcfost(**pars)
+        model = write_run_mcfost(mpi=mpi, **pars)
     else:
         inc, m, h, rc, rin, psi, PA, dust_a, vturb, dust_mass, gasdust_ratio = pars
-        model = write_run_mcfost(inc, m, h, rc, rin, psi, PA, dust_a, vturb, dust_mass, gasdust_ratio)
+        model = write_run_mcfost(inc, m, h, rc, rin, psi, PA, dust_a, vturb, dust_mass, gasdust_ratio, mpi)
 
     x = model.pixelscale * (np.arange(model.nx) - model.cx +1)
     y = model.pixelscale * (np.arange(model.ny) - model.cy +1)
@@ -33,13 +33,20 @@ def parametric_disk(velax, pars, pars_fixed, newcube):
 
 def write_run_mcfost(inclination=None, stellar_mass=None, scale_height=None,
                      r_c=None, r_in=None, flaring_exp=None, PA=None, dust_param=None,
-                     vturb=None, dust_mass=None, gasdust_ratio=None):
+                     vturb=None, dust_mass=None, gasdust_ratio=None, mpi=False):
     # Rewrite mcfost para file
     pool_id = multiprocess.current_process()
     pool_id = pool_id.pid
+    if mpi:
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+        pool_id = 'rank_'+str(rank)+'_'+str(pool_id)
+
     if os.path.isdir(str(pool_id)) == False:
         subprocess.call("mkdir "+str(pool_id), shell = True)
     updating = mcfost.Params('csalt.para')
+
     if inclination is not None:
         updating.map.RT_imin = inclination+180
         updating.map.RT_imax = inclination+180
@@ -63,6 +70,7 @@ def write_run_mcfost(inclination=None, stellar_mass=None, scale_height=None,
         updating.zones[0].dust_mass = dust_mass
     if gasdust_ratio is not None:
         updating.zones[0].gas_to_dust_ratio = gasdust_ratio
+
     para = str(pool_id)+'/csalt_'+str(pool_id)+'.para'
     updating.writeto(para)
     origin = os.getcwd()

@@ -12,9 +12,12 @@ from scipy import stats
 import scipy.constants as sc
 from multiprocessing import Pool
 
+# data_ = None
+# fixed_ = None
+
 
 # log-posterior calculator
-def lnprob(theta, code_='default'):
+def lnprob(theta, code_='default', mpi=False, model_vis=None, param=None):
 
     # compute the log-prior and return if problematic
     lnT = np.sum(logprior(theta)) * data_['nobs']
@@ -32,11 +35,11 @@ def lnprob(theta, code_='default'):
         # calculate model visibilities
         if EB == 0 or mcube is None:
             mvis, mcube = vismodel_iter(theta, fixed_, dat,
-                             data_['gcf'+str(EB)], data_['corr'+str(EB)], code=code_)
+                             data_['gcf'+str(EB)], data_['corr'+str(EB)], code=code_, mpi=mpi, param=param)
         else:
             mvis, mcube = vismodel_iter(theta, fixed_, dat,
                              data_['gcf'+str(EB)], data_['corr'+str(EB)], code=code_,
-                             mcube=mcube)
+                             mcube=mcube, mpi=mpi, param=param)
 
         # spectrally bin the model
         wt = dat.iwgt.reshape((dat.npol, -1, dat.chbin, dat.nvis))
@@ -45,15 +48,14 @@ def lnprob(theta, code_='default'):
 
 
         # compute the residuals (stack both pols)
-        resid = np.hstack(np.absolute(dat.vis - mvis_b))
+        if model_vis is None:
+            resid = np.hstack(np.absolute(dat.vis - mvis_b))
+        else:
+            resid = np.hstack(np.absolute(model_vis[str(EB)] - mvis_b))
         var = np.hstack(dat.wgt)
 
         # compute the log-likelihood
         lnL += -0.5 * np.tensordot(resid, np.dot(dat.inv_cov, var * resid))
-        if np.isnan(lnL):
-            print('NaN time - lnL')
-            print('resid', resid)
-
 
     # return the log-posterior and log-prior
     return lnL + dat.lnL0 + lnT, lnT
@@ -120,7 +122,7 @@ def lnprob_naif_wdoppcorr(theta):
     return lnL + dat.lnL0 + lnT, lnT
 
 
-def run_sampler(mode, nwalk, ndim, steps, pos, backend, code, pool):
+def run_sampler(mode, nwalk, ndim, steps, pos, backend, code, pool, mpi, model_vis, param):
     if mode == 'naif':
         print('\n Note: running in naif mode... \n')
         sampler = emcee.EnsembleSampler(nwalk, ndim, lnprob_naif,
@@ -138,9 +140,8 @@ def run_sampler(mode, nwalk, ndim, steps, pos, backend, code, pool):
         sampler.run_mcmc(pos, steps, progress=True)
         t1 = time.time()
     else:
-        print('2')
         sampler = emcee.EnsembleSampler(nwalk, ndim, lnprob, pool=pool,
-                                        backend=backend, kwargs={"code_": code})
+                                        backend=backend, kwargs={"code_": code, "mpi": mpi, "model_vis": model_vis, 'param': param})
         t0 = time.time()
         print('Running MCMC')
         sampler.run_mcmc(pos, steps, progress=True)
@@ -152,7 +153,7 @@ def run_sampler(mode, nwalk, ndim, steps, pos, backend, code, pool):
 def run_emcee(datafile, fixed, code=None, vra=None, vcensor=None,
               nwalk=75, ninits=200, nsteps=1000, chbin=3,
               outfile='stdout.h5', append=False, mode='iter', nthreads=6,
-              mpi=False):
+              mpi=False, model_vis=None, param=None):
 
 
     # load the data
@@ -179,7 +180,7 @@ def run_emcee(datafile, fixed, code=None, vra=None, vcensor=None,
 
     print(ndim, ' Priors initialised')
 
-    data_ = build_cache(p0, data_, fixed_, code=code, mode=mode)
+    data_ = build_cache(p0, data_, fixed_, code=code, mode=mode, param=param)
 
     print('Preliminary models run')
 
@@ -202,7 +203,7 @@ def run_emcee(datafile, fixed, code=None, vra=None, vcensor=None,
         # run to initialize
 
         isampler, t0, t1 = run_sampler(mode, nwalk, ndim, ninits, p0, backend=None,
-                                       code=code, pool=pool)
+                                       code=code, pool=pool, mpi=mpi, model_vis=model_vis, param=param)
 
         print('Backend configured in %.2f hours' % ((t1 - t0) / 3600))
 
@@ -221,20 +222,27 @@ def run_emcee(datafile, fixed, code=None, vra=None, vcensor=None,
         backend = emcee.backends.HDFBackend(post_file)
         backend.reset(nwalk, ndim)
 
+        if mpi:
+            if not pool.is_master():
+                pool.wait()
+                sys.exit(0)
+
         # run the MCMC
-        sampler, t0, t1 = run_sampler(mode, nwalk, ndim, nsteps, p00, backend, code, pool)
+        sampler, t0, t1 = run_sampler(mode, nwalk, ndim, nsteps, p00, backend, code, pool, mpi, model_vis, param)
 
     else:
         new_backend = emcee.backends.HDFBackend(post_file)
         print("Initial size: {0}".format(new_backend.iteration))
 
         new_sampler, t0, t1 = run_sampler(mode, nwalk, ndim, nsteps-new_backend.iteration, 
-                                          pos=None, backend=new_backend, code=code, pool=pool)
+                                          pos=None, backend=new_backend, code=code, pool=pool, mpi=mpi, model_vis=model_vis, param=param)
         print("Final size: {0}".format(new_backend.iteration))
 
     print(' ')
     print(' ')
     print('This run took %.2f hours' % ((t1 - t0) / 3600))
+
+    pool.close()
 
     return
 
@@ -247,7 +255,6 @@ def post_summary(p, prec=0.1, mu='peak', CIlevs=[84.135, 15.865, 50.]):
     if (mu == 'peak'):
         kde_p = stats.gaussian_kde(p)
         ndisc = int(np.round((CI_p[0] - CI_p[1]) / prec))
-        print(ndisc)
         x_p = np.linspace(CI_p[1], CI_p[0], ndisc)
         pk_p = x_p[np.argmax(kde_p.evaluate(x_p))]
     else:
@@ -393,6 +400,7 @@ def post_analysis_mcfost(outfile, burnin=0, autocorr=False, Ntau=200,
 
     # set parameter labels, truths (NOT HARDCODE!)
     lbls = ['incl', 'M', 'h', 'rc', 'rin', 'psi', 'PA', 'dust a', 'vturb', 'dust mass', 'g/d mass ratio']
+    poster_lbls = ['stellar mass (Msun)', 'vturb (km/s)']
 
 
     # Plot the integrated autocorrelation time every Ntau steps
@@ -477,11 +485,21 @@ def post_analysis_mcfost(outfile, burnin=0, autocorr=False, Ntau=200,
 
     # corner plot
     if corner_plot:
+        #plt.style.use('dark_background')
         levs = 1. - np.exp(-0.5 * (np.arange(3) + 1)**2)
         flat_chain = samples.reshape(-1, ndim)
+        # poster_chain = []
+        # poster_vars = [1, 8]
+        # for step in flat_chain:
+        #     newstep = []
+        #     for index in poster_vars:
+        #         newstep.append(step[index])
+        #     poster_chain.append(newstep)
+        # poster_chain = np.array(poster_chain)
         fig = corner.corner(flat_chain, plot_datapoints=False, levels=levs,
                             labels=lbls, truths=truths)
-        fig.savefig('corner.png')
+                            #, color='white', smooth=0.9, no_fill_contours=True)
+        fig.savefig('corner.png', dpi=300)
         fig.clf()
 
 
@@ -611,11 +629,11 @@ def post_analysis_mcfost_small(outfile, burnin=0, autocorr=False, Ntau=200,
         print((lbls[idim] + ' = '+fmt+' +'+fmt+' / -'+fmt).format(pk, hi, lo))
     print(' ')
 
-def build_cache(p0, data_, fixed_, code, mode=None):
+def build_cache(p0, data_, fixed_, code, mode=None, param=None):
 
     mcube = None
     for EB in range(data_['nobs']):
-        print('lnL0 = ', data_[str(EB)].lnL0)
+        #print('lnL0 = ', data_['lnL0_'+str(EB)]) 
 
         # initial model calculations
         if mode == 'naif':
@@ -628,16 +646,45 @@ def build_cache(p0, data_, fixed_, code, mode=None):
         else:
             if EB==0 or mcube is not None:
                 _mvis, gcf, corr, mcube = vismodel_def(p0[0], fixed_, data_[str(EB)],
-                                            mtype=code, return_holders=True, mcube=mcube)
+                                            mtype=code, return_holders=True, mcube=mcube, param=param)
             else:
                 _mvis, gcf, corr, mcube = vismodel_def(p0[0], fixed_, data_[str(EB)],
-                                            mtype=code, return_holders=True)
+                                            mtype=code, return_holders=True, param=param)
 
         # add gcf, corr caches into data dictionary, indexed by EB
         data_['gcf'+str(EB)] = gcf
         data_['corr'+str(EB)] = corr
 
     return data_
+
+def get_model_vis(theta, data_, fixed_, code_, mpi):
+    mcube = None
+    
+    modelvis = {}
+    
+    for EB in range(data_['nobs']):
+
+        # get the inference dataset
+        dat = data_[str(EB)]
+
+        # calculate model visibilities
+        if EB == 0 or mcube is None:
+            mvis, mcube = vismodel_iter(theta, fixed_, dat,
+                             data_['gcf'+str(EB)], data_['corr'+str(EB)], code=code_, mpi=mpi)
+        else:
+            mvis, mcube = vismodel_iter(theta, fixed_, dat,
+                             data_['gcf'+str(EB)], data_['corr'+str(EB)], code=code_,
+                             mcube=mcube, mpi=mpi)
+
+        # spectrally bin the model
+        wt = dat.iwgt.reshape((dat.npol, -1, dat.chbin, dat.nvis))
+        mvis_b = np.average(mvis.reshape((dat.npol, -1, dat.chbin,
+                                          dat.nvis)), weights=wt, axis=2)
+        
+        modelvis[str(EB)] = mvis_b
+    
+    return modelvis
+
 
 def init_priors(ndim, nwalk):
     p0 = np.empty((nwalk, ndim))
@@ -660,10 +707,7 @@ def init_priors(ndim, nwalk):
     return p0
 
 def set_globals(data, fixed):
-    print('yes here')
     global data_
     global fixed_
     data_ = data
     fixed_ = fixed
-
-    return

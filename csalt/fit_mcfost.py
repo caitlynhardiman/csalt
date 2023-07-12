@@ -13,6 +13,7 @@ class setup_fit():
                  append: bool = False,
                  mpi: bool = False,
                  mode='iter',
+                 param=None,
                  vra_fit=[4.06e3, 8.06e3],
                  vcensor=None,
                  nwalk=128,
@@ -60,6 +61,12 @@ class setup_fit():
         self.cfg_dict = cfg_dict
         self.fixed = nu_rest, FOV, Npix, dist, cfg_dict
         self.mpi = mpi
+        self.param = param
+
+        if param==None:
+            self.priorfile = self.mtype
+        else:
+            self.priorfile = self.mtype+'_'+self.param
 
 
         if self.mpi:
@@ -79,12 +86,12 @@ class setup_fit():
         Sets up the prior functions and if necessary, makes the posteriors
         directory
         """
-        if not os.path.exists('priors_'+self.mtype+'.py'):
+        if not os.path.exists('priors_'+self.priorfile+'.py'):
             print('There is no such file "priors_"+self.mtype+".py".\n')
             sys.exit()
         else:
             os.system('rm priors.py')
-            os.system('cp priors_'+self.mtype+'.py priors.py')
+            os.system('cp priors_'+self.priorfile+'.py priors.py')
         if not os.path.exists(self.post_dir):
             os.system('mkdir -p '+self.post_dir)
 
@@ -99,7 +106,7 @@ class setup_fit():
                   vcensor=self.vcensor, nwalk=self.nwalk, ninits=self.ninits,
                   nsteps=self.nsteps, outfile=self.post_dir+self.postfile,
                   mode=self.mode, nthreads=self.nthreads, append=self.append,
-                  mpi=self.mpi)
+                  mpi=self.mpi, param=self.param)
         
 
     def initialise(self):
@@ -113,7 +120,7 @@ class setup_fit():
         print(ndim)
         data = fitdata(self.datafile, vra=self.vra_fit, nu_rest=self.nu_rest, chbin=3)
         p0 = init_priors(nwalk=self.nwalk, ndim=ndim)
-        data = build_cache(p0, data, self.fixed, code=self.mtype, mode=self.mode)
+        data = build_cache(p0, data, self.fixed, code=self.mtype, mode=self.mode, param = self.param)
         return data
     
 
@@ -135,3 +142,21 @@ class setup_fit():
         Need to run initialise function first
         """
         plot(data, self.fixed, self.mtype, theta, mcube)
+
+    def model_to_model(self, theta):
+        """
+        Runs a model to model fit so we can verify that the method is working
+        """
+        if self.mtype == 'MCFOST':
+            from csalt.data_mcfost import fitdata
+        data = fitdata(self.datafile, vra=self.vra_fit, nu_rest=self.nu_rest, chbin=3)
+        p0 = [theta]
+        data = build_cache(p0, data, self.fixed, code=self.mtype, mode=self.mode)
+
+        model_vis = get_model_vis(theta, data, self.fixed, code_=self.mtype, mpi=self.mpi)
+
+        run_emcee(self.datafile, self.fixed, code=self.mtype, vra=self.vra_fit,
+                  vcensor=self.vcensor, nwalk=self.nwalk, ninits=self.ninits,
+                  nsteps=self.nsteps, outfile=self.post_dir+self.postfile,
+                  mode=self.mode, nthreads=self.nthreads, append=self.append,
+                  mpi=self.mpi, model_vis=model_vis)
