@@ -40,7 +40,7 @@ def parametric_disk(velax, pars, pars_fixed):
         cfg_dict['tausurf'] = False
 
     inc, PA, mstar, r_l, Tmid0, Tatm0, qmid, qatm, zq, deltaT, Sig0, \
-        p1, p2, xmol, depl, ab_zlo, ab_zhi, rmax_ab, xi, vlsr, dx, dy = pars
+        p1, p2, xmol, depl, zrmin, zrmax, rmax_abund, xi, vlsr, dx, dy = pars
 
     # Fixed and adjusted parameters
     r0 = 10 * _AU
@@ -68,12 +68,8 @@ def parametric_disk(velax, pars, pars_fixed):
 
     # Set up the abundance function
     def abund(r, z):
-        H = np.sqrt(_k * Tmid0 * (r / r0)**qmid / (_mu * _mH)) / \
-            omega_Kep(r, np.zeros_like(r))
-        z_mask = np.logical_and(z >= ab_zlo * H, z <= ab_zhi * H)
-        layer_mask = np.logical_and(z_mask, (r <= rmax_ab * _AU))
-        return np.where(layer_mask, xmol, xmol * depl)
-
+        zmask = np.logical_and(z/r <= zrmax, z/r >= zrmin)
+        return np.where(zmask, xmol, xmol * depl)
 
     # Set up the nonthermal line-width function (NEEDS WORK!)
     def nonthermal_linewidth(r, z):

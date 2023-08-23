@@ -57,7 +57,7 @@ class radmc_setup:
                 dindmax = np.max(dind[dsize <= amax])
 
                 # queue up dust species
-                self.ndust = np.int(dindmax + 1)
+                self.ndust = int(dindmax + 1)
 
 
     def _read_spatial_grid(self, args, refine=False):
@@ -85,7 +85,7 @@ class radmc_setup:
                     # if linear, respect the implied updated resolution
                     requested_res = (rref_o[ir] - rref_i[ir]) / nrref[ir]
                     actual_dr = (r_[rixh] - r_[rixl]) / _AU
-                    Nsub = np.int(actual_dr / requested_res)
+                    Nsub = int(actual_dr / requested_res)
                     rsub = np.linspace(r_[rixl], r_[rixh], Nsub)
                     r_ = np.concatenate((r_[:rixl], rsub, r_[rixh+1:]))
                 elif rref_scl[ir] == 'log':
@@ -117,6 +117,8 @@ class radmc_setup:
         self.t_centers = np.average([self.t_walls[:-1], self.t_walls[1:]],
                                     axis=0)
         assert self.t_centers.size == self.nt
+#        print(self.t_centers)
+#        sys.exit()
 
         # phi (azimuth angle) grid in [rad]
         self.p_min = args.get("p_min", 0.0)
@@ -244,7 +246,7 @@ class radmc_setup:
                 dindmax = np.max(dind[dsize <= amax])
 
                 # queue up dust species
-                self.ndust = np.int(dindmax + 1)
+                self.ndust = int(dindmax + 1)
                 idust = [str(ix).rjust(2, '0') for ix in range(self.ndust)]
 
                 # generate control file
@@ -565,12 +567,12 @@ class radmc_structure:
         imagefile = open(self.modelname+'/image.out')
         iformat = imagefile.readline()
         im_nx, im_ny = imagefile.readline().split() #npixels along x and y axes
-        im_nx, im_ny = np.int(im_nx), np.int(im_ny)
-        nlam = np.int(imagefile.readline())
+        im_nx, im_ny = int(im_nx), int(im_ny)
+        nlam = int(imagefile.readline())
 
         pixsize_x, pixsize_y = imagefile.readline().split() #pixel sizes in cm 
-        pixsize_x = np.float(pixsize_x)
-        pixsize_y = np.float(pixsize_y)
+        pixsize_x = float(pixsize_x)
+        pixsize_y = float(pixsize_y)
 
         imvals = ascii.read(self.modelname+'/image.out', format='fast_csv', 
                             guess=False, data_start=4,
@@ -612,6 +614,13 @@ class radmc_structure:
         if os.path.exists('image.out'):
             os.system('mv image.out image0.out')
         os.system('rm -rf tausurf_3d.out')
+        print('radmc3d tausurf %.2f ' % taus + \
+              'incl %.2f ' % inc + \
+              'posang %.2f ' % posang + \
+              'npix %d ' % Npix + \
+              'sizeau %d ' % sizeau + \
+              'loadlambda ' + \
+              'setthreads 6')
         os.system('radmc3d tausurf %.2f ' % taus + \
                   'incl %.2f ' % inc + \
                   'posang %.2f ' % posang + \
