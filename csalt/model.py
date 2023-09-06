@@ -12,6 +12,7 @@ import scipy.constants as sc
 from scipy.ndimage import convolve1d
 from scipy.interpolate import interp1d
 from scipy import linalg
+from scipy import stats
 from vis_sample import vis_sample
 from vis_sample.classes import SkyImage
 
@@ -43,6 +44,24 @@ class dataset:
         self.npol, self.nvis = vis.shape[0], vis.shape[2]
         self.nstamps = len(np.unique(tstamp_ID))
 
+    def to_dict(self):
+
+        return{
+            'um': np.array(self.um),
+            'vm': np.array(self.vm),
+            'ulam': np.array(self.ulam),
+            'vlam': np.array(self.vlam),
+            'tstamp': np.array(self.tstamp),
+            'nstamps': np.array(self.nstamps),
+            'nu_TOPO': np.array(self.nu_TOPO),
+            'nu_LSRK': np.array(self.nu_LSRK),
+            'vis': np.array(self.vis),
+            'wgt': np.array(self.wgt),
+            'npol': np.array(self.npol),
+            'nchan': np.array(self.nchan),
+            'nvis': np.array(self.nvis),
+        }
+
 
 """
     The model class that encapsulates the CSALT framework.
@@ -55,8 +74,9 @@ class model:
             warnings.filterwarnings("ignore")
 
         if np.logical_or((path != os.getcwd()), (path is not None)):
-            sys.path.append(path)
-            self.path = path
+            if path is not None:
+                sys.path.append(path)
+                self.path = path
         else:
             self.path = ''
         self.prescription = prescription
@@ -193,7 +213,7 @@ class model:
                  restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, chpad=2, 
                  Nup=None, noise_inject=None, doppcorr='approx', SRF='ALMA',
                  gcf_holder=None, corr_cache=None, return_holders=False,
-                 cfg_dict={}):
+                 cfg_dict={}, icube=None, param=None):
 
         """ Prepare the spectral grids: format = [timestamps, channels] """
         # Pad the LSRK frequencies
@@ -221,6 +241,17 @@ class model:
         ### - Compute the model visibilities
         mvis_ = np.squeeze(np.empty((dset.npol, nch, dset.nvis, 2)))
 
+        if self.prescription == 'MCFOST':
+            mu_RA = 0
+            mu_DEC = 0
+        else:
+            mu_RA = pars[-2]
+            mu_DEC = pars[-1]
+
+        if param is not None:
+            param_dict_form = {param: pars[0]}
+            pars = param_dict_form
+
         # *Exact* Doppler correction calculation
         if doppcorr == 'exact':
             for itime in range(dset.nstamps):
@@ -228,9 +259,10 @@ class model:
                 print('timestamp '+str(itime+1)+' / '+str(dset.nstamps))
 
                 # make a cube
-                icube = self.cube(vel[itime,:], pars, restfreq=restfreq,
-                                  FOV=FOV, Npix=Npix, dist=dist, 
-                                  cfg_dict=cfg_dict)
+                if icube is None:
+                    icube = self.cube(vel[itime,:], pars, restfreq=restfreq,
+                                      FOV=FOV, Npix=Npix, dist=dist, 
+                                      cfg_dict=cfg_dict)
 
                 # visibility indices for this timestamp only
                 ixl = np.min(np.where(dset.tstamp == itime))
@@ -240,7 +272,7 @@ class model:
                 mvis = vis_sample(imagefile=icube, 
                                   uu=dset.ulam[ixl:ixh], vv=dset.vlam[ixl:ixh],
                                   gcf_holder=gcf_holder, corr_cache=corr_cache,
-                                  mu_RA=pars[-2], mu_DEC=pars[-1], 
+                                  mu_RA=mu_RA, mu_DEC=mu_DEC, 
                                   mod_interp=False).T
 
                 # populate the results in the output array *for this stamp*
@@ -254,23 +286,26 @@ class model:
             v_model = vel[int(np.round(nu.shape[0] / 2)),:]
 
             # make a cube
-            icube = self.cube(v_model, pars, restfreq=restfreq,
-                              FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict)
+            if icube is None:
+                icube = self.cube(v_model, pars, restfreq=restfreq,
+                                  FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict)
 
             # sample the FFT on the (u, v) spacings
             if return_holders:
                 mvis, gcf, corr = vis_sample(imagefile=icube, 
                                              uu=dset.ulam, vv=dset.vlam,
-                                             mu_RA=pars[-2], mu_DEC=pars[-1],
+                                             mu_RA=mu_RA, mu_DEC=mu_DEC,
                                              return_gcf=True, 
                                              return_corr_cache=True,
                                              mod_interp=False)
-                return mvis.T, gcf, corr
+                return mvis.T, gcf, corr, icube
             else:
                 mvis = vis_sample(imagefile=icube, uu=dset.ulam, vv=dset.vlam, 
                                   gcf_holder=gcf_holder, corr_cache=corr_cache,
-                                  mu_RA=pars[-2], mu_DEC=pars[-1], 
+                                  mu_RA=mu_RA, mu_DEC=mu_DEC, 
                                   mod_interp=False).T
+                
+            print(len(v_model), len(mvis))
 
             # distribute to different timestamps by interpolation
             for itime in range(dset.nstamps):
@@ -286,22 +321,23 @@ class model:
         elif doppcorr is None:
             print('I AM NOT DOING A DOPPLER CORRECTION!')
             # make a cube
-            icube = self.cube(vel[0,:], pars, restfreq=restfreq,
+            if icube is None:
+                icube = self.cube(vel[0,:], pars, restfreq=restfreq,
                               FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict)
 
             # sample the FFT on the (u, v) spacings
             if return_holders:
                 mvis, gcf, corr = vis_sample(imagefile=icube, 
                                              uu=dset.ulam, vv=dset.vlam,
-                                             mu_RA=pars[-2], mu_DEC=pars[-1],
+                                             mu_RA=mu_RA, mu_DEC=mu_DEC,
                                              return_gcf=True,
                                              return_corr_cache=True,
                                              mod_interp=False)
-                return mvis.T, gcf, corr
+                return mvis.T, gcf, corr, icube
             else:
                 mvis = vis_sample(imagefile=icube, uu=dset.ulam, vv=dset.vlam,
                                   gcf_holder=gcf_holder, corr_cache=corr_cache,
-                                  mu_RA=pars[-2], mu_DEC=pars[-1],
+                                  mu_RA=mu_RA, mu_DEC=mu_DEC,
                                   mod_interp=False).T
         else:
             print('You need to specify a doppcorr method.  Exiting.')
@@ -505,6 +541,7 @@ class model:
                 well_cond=300):
 
         # Load the data from the MS file into a dictionary
+        # CAITLYN - have a part in here where it checks this hasn't already been done
         data_dict = read_MS(msfile)
 
         # If chbin is a scalar, distribute it over the Nobs executions
@@ -525,6 +562,9 @@ class model:
         if np.any(chbin > 2):
             print('Forcing chbin --> 2; do not over-bin your data!')
         chbin[chbin > 2] = 2
+
+        if self.prescription == 'MCFOST':
+            min_nchan = self.find_min_chan(data_dict, vra, restfreq, chbin) 
 
         # Loop over executions
         for i in range(data_dict['Nobs']):
@@ -556,29 +596,40 @@ class model:
             ixh = np.abs(v_LSRK[midstamp,:] - vra_[1]).argmin()
 
             # Adjust indices to ensure they are evenly divisible by chbin
-            if np.logical_and((chbin[i] > 1), ((ixh - ixl) % chbin[i] != 0)):
-                # bounded at upper edge only
-                if np.logical_and((ixh == (data.nchan - 1)), (ixl > 0)):
-                    ixl -= 1
-                # bounded at lower edge only
-                elif np.logical_and((ixh < (data.nchan - 1)), (ixl == 0)):
-                    ixh += 1
-                # bounded at both edges
-                elif np.logical_and((ixh == (data.nchan - 1)), (ixl == 0)):
-                    ixh -= 1
-                # unbounded on either side
-                else:
-                    ixh += 1
+            if self.prescription != 'MCFOST':
+                if np.logical_and((chbin[i] > 1), ((ixh - ixl) % chbin[i] != 0)):
+                    # bounded at upper edge only
+                    if np.logical_and((ixh == (data.nchan - 1)), (ixl > 0)):
+                        ixl -= 1
+                    # bounded at lower edge only
+                    elif np.logical_and((ixh < (data.nchan - 1)), (ixl == 0)):
+                        ixh += 1
+                    # bounded at both edges
+                    elif np.logical_and((ixh == (data.nchan - 1)), (ixl == 0)):
+                        ixh -= 1
+                    # unbounded on either side
+                    else:
+                        ixh += 1
+            else:
+                # for the mcfost models all the ebs need to have the same number of channels
+                if (ixh-ixl) != min_nchan:
+                    diff_lower = np.abs(v_LSRK[midstamp, ixl] - vra[0])
+                    diff_higher = np.abs(v_LSRK[midstamp, ixh] - vra[1])
+                    if diff_lower > diff_higher:
+                        ixl = ixh - min_nchan
+                    else:
+                        ixh = ixl + min_nchan
 
             # Clip the data to cover only the frequencies of interest
             inu_TOPO = data.nu_TOPO[ixl:ixh]
             inu_LSRK = data.nu_LSRK[:,ixl:ixh]
-            iv_LSRK = v_LSRK[:,ixl:ixh]
+            iv_LSRK = v_LSRK[:,ixl:ixh] 
             inchan = inu_LSRK.shape[1]
             ivis = data.vis[:,ixl:ixh,:]
             iwgt = data.wgt[:,ixl:ixh,:]
 
             # Binning operations
+            print('Binning Time')
             binned = True if chbin[i] > 1 else False
             if binned:
                 bnchan = int(inchan / chbin[i])
@@ -636,6 +687,7 @@ class model:
                     scov_inv = np.dot(vv.T, np.dot(np.diag(ss**-1), uu.T))
 
             # Pre-calculate the log-likelihood normalization term
+            print('Log likelihood normalisation time!')
             dterm = np.empty((data.npol, data.nvis))
             for ii in range(data.nvis):
                 for jj in range(data.npol):
@@ -662,6 +714,66 @@ class model:
 
         # Return the output dictionary
         return out_dict
+    
+    """
+        Find the minimum number of channels needed to model the data (for Caitlyn's MCFOST models)
+
+    """
+    def find_min_chan(self, data_dict, vra, restfreq, chbin):
+        
+        min_nchan = None
+
+         # Loop over executions
+        for i in range(data_dict['Nobs']):
+
+            # Pull the dataset object for this execution
+            data = data_dict[str(i)]
+
+            # If necessary, distribute weights across the spectrum
+            if not data.wgt.shape == data.vis.shape:
+                data.wgt = np.tile(data.wgt, (data.nchan, 1, 1))
+                data.wgt = np.rollaxis(data.wgt, 1, 0)
+
+            # Convert the LSRK frequency grid to velocities
+            v_LSRK = sc.c * (1 - data.nu_LSRK / restfreq)
+
+            # Fix direction of desired velocity bounds
+            if vra is None: vra = np.array([-1e5, 1e5])
+            dv, dvra = np.diff(v_LSRK, axis=1), np.diff(vra)
+            if np.logical_or(np.logical_and(np.all(dv < 0), np.all(dvra > 0)),
+                             np.logical_and(np.all(dv < 0), np.all(dvra < 0))):
+                vra_ = vra[::-1]
+            else:
+                vra_ = 1. * vra
+            sgn_v = np.sign(np.diff(vra_)[0])
+
+            # Find where to clip to lie within the desired velocity bounds
+            midstamp = int(data.nstamps / 2)
+            ixl = np.abs(v_LSRK[midstamp,:] - vra_[0]).argmin()
+            ixh = np.abs(v_LSRK[midstamp,:] - vra_[1]).argmin()
+
+            # Adjust indices to ensure they are evenly divisible by chbin
+            if np.logical_and((chbin[i] > 1), ((ixh - ixl) % chbin[i] != 0)):
+                # bounded at upper edge only
+                if np.logical_and((ixh == (data.nchan - 1)), (ixl > 0)):
+                    ixl -= 1
+                # bounded at lower edge only
+                elif np.logical_and((ixh < (data.nchan - 1)), (ixl == 0)):
+                    ixh += 1
+                # bounded at both edges
+                elif np.logical_and((ixh == (data.nchan - 1)), (ixl == 0)):
+                    ixh -= 1
+                # unbounded on either side
+                else:
+                    ixh += 1
+
+            if min_nchan is None or (ixh -ixl) < min_nchan:
+                min_nchan = ixh - ixl
+
+        if min_nchan % 2 == 0:
+            min_nchan +=1
+        
+        return min_nchan
 
 
     """
@@ -670,7 +782,7 @@ class model:
     def sample_posteriors(self, msfile, vra=None, vcensor=None, kwargs=None,
                           restfreq=230.538e9, chbin=1, well_cond=300,
                           Nwalk=75, Ninits=20, Nsteps=1000, 
-                          outpost='stdout.h5', append=False, Nthreads=6):
+                          outpost='stdout.h5', append=False, Nthreads=6, param=None):
 
         import emcee
         from multiprocessing import Pool
@@ -678,34 +790,32 @@ class model:
             os.environ["OMP_NUM_THREADS"] = "1"
 
         # Parse the data into proper format
+        print('Fitting data')
         infdata = self.fitdata(msfile, vra=vra, vcensor=vcensor, 
                                restfreq=restfreq, chbin=chbin, 
                                well_cond=well_cond)
 
         # Initialize the parameters using random draws from the priors
+        print('Initialising priors')
         priors = importlib.import_module('priors_'+self.prescription)
         Ndim = len(priors.pri_pars)
-        p0 = np.empty((Nwalk, Ndim))
-        for ix in range(Ndim):
-            if ix == 9:
-                p0[:,ix] = np.sqrt(2 * sc.k * p0[:,6] / (28 * (sc.m_p+sc.m_e)))
-            else:
-                _ = [str(priors.pri_pars[ix][ip])+', '
-                     for ip in range(len(priors.pri_pars[ix]))]
-                cmd = 'np.random.'+priors.pri_types[ix]+ \
-                      '('+"".join(_)+str(Nwalk)+')'
-                p0[:,ix] = eval(cmd)
+        if self.prescription == 'MCFOST':
+            p0 = self.mcfost_priors(priors, Nwalk, Ndim)
+        else:
+            p0 = np.empty((Nwalk, Ndim))
+            for ix in range(Ndim):
+                if ix == 9:
+                    p0[:,ix] = np.sqrt(2 * sc.k * p0[:,6] / (28 * (sc.m_p+sc.m_e)))
+                else:
+                    _ = [str(priors.pri_pars[ix][ip])+', '
+                         for ip in range(len(priors.pri_pars[ix]))]
+                    cmd = 'np.random.'+priors.pri_types[ix]+ \
+                          '('+"".join(_)+str(Nwalk)+')'
+                    p0[:,ix] = eval(cmd)
 
         # Acquire and store the GCF and CORR caches for iterative sampling
-        for i in range(infdata['Nobs']):
-            _, gcf, corr = self.modelset(infdata[str(i)], p0[0], 
-                                         restfreq=restfreq, 
-                                         FOV=kwargs['FOV'],
-                                         Npix=kwargs['Npix'], 
-                                         dist=kwargs['dist'],
-                                         return_holders=True)
-            infdata['gcf_'+str(i)] = gcf
-            infdata['corr_'+str(i)] = corr
+        print('Caching...')
+        infdata = self.cache(p0, infdata, restfreq, kwargs, param)
 
         # Declare the data and kwargs as globals (for speed in pickling)
         global fdata
@@ -735,6 +845,7 @@ class model:
 
         if not append:
             # Initialize the MCMC walkers
+            print('Initialising walkers')
             with Pool(processes=Nthreads) as pool:
                 isamp = emcee.EnsembleSampler(Nwalk, Ndim, self.log_posterior,
                                               pool=pool)
@@ -750,6 +861,7 @@ class model:
             backend.reset(Nwalk, Ndim)
 
             # Sample the posterior distribution
+            print('Full MCMC')
             with Pool(processes=Nthreads) as pool:
                 samp = emcee.EnsembleSampler(Nwalk, Ndim, self.log_posterior,
                                              pool=pool, backend=backend)
@@ -777,12 +889,57 @@ class model:
         del kw
 
         return samp
+    
+    """
+        Function to initialise the priors for Caitlyn's MCFOST models
+    """
+    def mcfost_priors(self, priors, nwalk, ndim):
+        p0 = np.empty((nwalk, ndim))
+        for ix in range(ndim):
+            if priors.pri_types[ix] == "normal" or priors.pri_types[ix] == "uniform":
+                _ = [str(priors.pri_pars[ix][ip])+', ' for ip in range(len(priors.pri_pars[ix]))]
+                cmd = 'np.random.'+priors.pri_types[ix]+'('+"".join(_)+str(nwalk)+')'
+                p0[:,ix] = eval(cmd)
+            elif priors.pri_types[ix] == "truncnorm" or priors.pri_types[ix] == "loguniform":
+                if priors.pri_types[ix] == "truncnorm":
+                    params = priors.pri_pars[ix]
+                    mod_pri_pars = [(params[2]-params[0])/params[1], (params[3]-params[0])/params[1], params[0], params[1]]
+                    _ = [str(mod_pri_pars[ip])+', ' for ip in range(len(mod_pri_pars))]
+                else:
+                    _ = [str(priors.pri_pars[ix][ip])+', ' for ip in range(len(priors.pri_pars[ix]))]
+                cmd = 'stats.'+priors.pri_types[ix]+'.rvs('+"".join(_)+'size='+str(nwalk)+')'
+                p0[:,ix] = eval(cmd)
+            else:
+                raise NameError('Prior type unaccounted for')
+        return p0
+    
+
+    """
+        Function to acquire and store the GCF and CORR caches for iterative sampling
+    """
+    def cache(self, p0, infdata, restfreq, kwargs, param=None):
+        icube = None
+        for i in range(infdata['Nobs']):
+            if self.prescription != 'MCFOST' or i==0:
+                icube = None
+            _, gcf, corr, icube = self.modelset(dset=infdata[str(i)], pars=p0[0], 
+                                         restfreq=restfreq, 
+                                         FOV=kwargs['FOV'],
+                                         Npix=kwargs['Npix'], 
+                                         dist=kwargs['dist'],
+                                         return_holders=True,
+                                         icube=icube,
+                                         param=param)
+            infdata['gcf_'+str(i)] = gcf
+            infdata['corr_'+str(i)] = corr
+    
+        return infdata
 
 
     """
         Function to calculate a log-posterior sample.
     """
-    def log_posterior(self, theta):
+    def log_posterior(self, theta, model=None, param=None):
 
         # Calculate log-prior
         priors = importlib.import_module('priors_'+self.prescription)
@@ -791,7 +948,7 @@ class model:
             return -np.inf, -np.inf
 
         # Compute log-likelihood
-        lnL = self.log_likelihood(theta, fdata=fdata, kwargs=kw)
+        lnL = self.log_likelihood(theta, fdata=fdata, kwargs=kw, model_vis=model, param=param)
 
         # return the log-posterior and the log-prior
         return lnL + lnT, lnT
@@ -800,14 +957,19 @@ class model:
     """
         Function to calculate a log-likelihood.
     """
-    def log_likelihood(self, theta, fdata=None, kwargs=None):
+    def log_likelihood(self, theta, fdata=None, kwargs=None, model_vis=None, param=None):
 
         # Loop over observations to get likelihood
         logL = 0
+        icube = None
         for i in range(fdata['Nobs']):
 
             # Get the data 
             _data = fdata[str(i)]
+
+            # only reuse the model for mcfost run
+            if self.prescription != 'MCFOST' or i==0:
+                icube = None
 
             # Calculate the model
             _mdl = self.modelset(_data, theta, restfreq=kwargs['restfreq'],
@@ -816,7 +978,7 @@ class model:
                                  doppcorr=kwargs['doppcorr'], 
                                  SRF=kwargs['SRF'], 
                                  gcf_holder=fdata['gcf_'+str(i)],
-                                 corr_cache=fdata['corr_'+str(i)])
+                                 corr_cache=fdata['corr_'+str(i)], icube=icube)
 
             # Spectrally bin the model visibilities if necessary
             # **technically wrong, since the weights are copied like this; 
@@ -830,7 +992,10 @@ class model:
                 mvis = 1. * _mdl.vis
 
             # Compute the residual and variance matrices(stack both pols)
-            resid = np.hstack(np.absolute(_data.vis - mvis))
+            if model_vis is None:
+                resid = np.hstack(np.absolute(_data.vis - mvis))
+            else:
+                resid = np.hstack(np.absolute(model_vis[str(i)] - mvis))
             var = np.hstack(_data.wgt)
 
             # Compute the log-likelihood (** still needs constant term)

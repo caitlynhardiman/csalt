@@ -7,7 +7,7 @@ from csalt import *
 class setup_fit():
 
     def __init__(self,
-                 h5file=None,
+                 msfile=None,
                  code=None,
                  postfile='/DMTau.h5',
                  append: bool = False,
@@ -26,8 +26,8 @@ class setup_fit():
                  dist=144.5,
                  cfg_dict={}):
         
-        if h5file is None:
-            print('Need to give a h5 file as input!')
+        if msfile is None:
+            print('Need to give an ms file as input!')
             return
         
         if postfile is None:
@@ -44,7 +44,7 @@ class setup_fit():
         self.vra_fit = vra_fit
         self.vcensor = vcensor
         # I/O
-        self.datafile = h5file
+        self.datafile = msfile
         self.post_dir = 'storage/posteriors/'+self.mtype
         self.postfile = postfile
         # Inference Setups
@@ -107,6 +107,11 @@ class setup_fit():
                   nsteps=self.nsteps, outfile=self.post_dir+self.postfile,
                   mode=self.mode, nthreads=self.nthreads, append=self.append,
                   mpi=self.mpi, param=self.param)
+
+        sample_posteriors(self, msfile, vra=None, vcensor=None, kwargs=None,
+                          restfreq=230.538e9, chbin=1, well_cond=300,
+                          Nwalk=75, Ninits=20, Nsteps=1000, 
+                          outpost='stdout.h5', append=False, Nthreads=6, param=None)
         
 
     def initialise(self):
@@ -114,8 +119,7 @@ class setup_fit():
         Initialises the mcmc such that you could pass in a theta array and obtain a
         single log likelihood value etc.
         """
-        if self.mtype == 'MCFOST':
-            from csalt.data_mcfost import fitdata
+        
         ndim = len(pri_pars)
         print(ndim)
         data = fitdata(self.datafile, vra=self.vra_fit, nu_rest=self.nu_rest, chbin=3)

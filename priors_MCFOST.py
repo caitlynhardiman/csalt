@@ -5,12 +5,12 @@ from scipy.stats import norm
 
 ### User input for priors
 
-# Stellar mass, inclination, scale height, rc, rin, psi, PA, dust parameter, vturb
+# Stellar mass, inclination, scale height, rc, rin, psi, PA, dust parameter, vturb, dust mass, gas_to_dust_ratio
 
 pri_types = [ 'normal',  'uniform', 'uniform',  'uniform', 'uniform',
-              'truncnorm', 'normal',  'loguniform', 'uniform']
+              'truncnorm', 'normal',  'loguniform', 'uniform', 'uniform', 'uniform']
 pri_pars = [ [36, 1], [0.2, 0.6], [7, 25], [100, 300], [0.1, 10],
-             [1.3, 0.1, 1, 2], [156, 2], [1e-5, 1e-3], [0.0, 0.2]]
+             [1.3, 0.1, 1, 2], [156, 2], [1e-5, 1e-3], [0.0, 0.2], [1e-4, 0.1], [10, 1000]]
 
 
 ### Pre-defined standard functions
