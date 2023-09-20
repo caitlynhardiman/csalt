@@ -80,6 +80,7 @@ class model:
         else:
             self.path = ''
         self.prescription = prescription
+        self.param = None
 
 
     """ 
@@ -304,8 +305,6 @@ class model:
                                   gcf_holder=gcf_holder, corr_cache=corr_cache,
                                   mu_RA=mu_RA, mu_DEC=mu_DEC, 
                                   mod_interp=False).T
-                
-            print(len(v_model), len(mvis))
 
             # distribute to different timestamps by interpolation
             for itime in range(dset.nstamps):
@@ -360,7 +359,7 @@ class model:
 
         # Return the pure or pure and noisy models
         if noise_inject is None:
-            return mset_p
+            return mset_p, icube
         else:
             # Calculate noise spectra
             noise = self.calc_noise(noise_inject, dset, 
@@ -379,8 +378,8 @@ class model:
             mvis_n = mvis_noisy[:,:,:,0] + 1j * mvis_noisy[:,:,:,1]
             mset_n = dataset(dset.um, dset.vm, mvis_n, dset.wgt, dset.nu_TOPO,
                              dset.nu_LSRK, dset.tstamp)
-
-            return mset_p, mset_n
+    
+            return mset_p, mset_n, icube
 
 
     """
@@ -541,7 +540,6 @@ class model:
                 well_cond=300):
 
         # Load the data from the MS file into a dictionary
-        # CAITLYN - have a part in here where it checks this hasn't already been done
         data_dict = read_MS(msfile)
 
         # If chbin is a scalar, distribute it over the Nobs executions
@@ -569,148 +567,176 @@ class model:
         # Loop over executions
         for i in range(data_dict['Nobs']):
 
-            # Pull the dataset object for this execution
-            data = data_dict[str(i)]
-
-            # If necessary, distribute weights across the spectrum
-            if not data.wgt.shape == data.vis.shape:
-                data.wgt = np.tile(data.wgt, (data.nchan, 1, 1))
-                data.wgt = np.rollaxis(data.wgt, 1, 0)
-
-            # Convert the LSRK frequency grid to velocities
-            v_LSRK = sc.c * (1 - data.nu_LSRK / restfreq)
-
-            # Fix direction of desired velocity bounds
-            if vra is None: vra = np.array([-1e5, 1e5])
-            dv, dvra = np.diff(v_LSRK, axis=1), np.diff(vra)
-            if np.logical_or(np.logical_and(np.all(dv < 0), np.all(dvra > 0)),
-                             np.logical_and(np.all(dv < 0), np.all(dvra < 0))):
-                vra_ = vra[::-1]
+            presaved_dict = 'eb' + str(i) + '.npz'
+            if os.path.isfile(presaved_dict):
+                loaded_array = np.load(presaved_dict)
+                um = loaded_array['arr_0']
+                vm = loaded_array['arr_1']
+                vis = loaded_array['arr_2']
+                wgt = loaded_array['arr_3']
+                nu_TOPO = loaded_array['arr_4']
+                nu_LSRK = loaded_array['arr_5']
+                tstamp = loaded_array['arr_6']
+                invcov = loaded_array['arr_7']
+                lnL0 = loaded_array['arr_8']
+            
+                out_dict[str(i)] = dataset(um, vm, vis, wgt,
+                                           nu_TOPO, nu_LSRK, tstamp)
+                
+                # Package additional information into the dictionary
+                out_dict['invcov_'+str(i)] = invcov
+                out_dict['lnL0_'+str(i)] = lnL0
+                out_dict['gcf_'+str(i)] = None
+                out_dict['corr_'+str(i)] = None
+                
             else:
-                vra_ = 1. * vra
-            sgn_v = np.sign(np.diff(vra_)[0])
 
-            # Find where to clip to lie within the desired velocity bounds
-            midstamp = int(data.nstamps / 2)
-            ixl = np.abs(v_LSRK[midstamp,:] - vra_[0]).argmin()
-            ixh = np.abs(v_LSRK[midstamp,:] - vra_[1]).argmin()
+                # Pull the dataset object for this execution
+                data = data_dict[str(i)]
 
-            # Adjust indices to ensure they are evenly divisible by chbin
-            if self.prescription != 'MCFOST':
-                if np.logical_and((chbin[i] > 1), ((ixh - ixl) % chbin[i] != 0)):
-                    # bounded at upper edge only
-                    if np.logical_and((ixh == (data.nchan - 1)), (ixl > 0)):
-                        ixl -= 1
-                    # bounded at lower edge only
-                    elif np.logical_and((ixh < (data.nchan - 1)), (ixl == 0)):
-                        ixh += 1
-                    # bounded at both edges
-                    elif np.logical_and((ixh == (data.nchan - 1)), (ixl == 0)):
-                        ixh -= 1
-                    # unbounded on either side
-                    else:
-                        ixh += 1
-            else:
-                # for the mcfost models all the ebs need to have the same number of channels
-                if (ixh-ixl) != min_nchan:
-                    diff_lower = np.abs(v_LSRK[midstamp, ixl] - vra[0])
-                    diff_higher = np.abs(v_LSRK[midstamp, ixh] - vra[1])
-                    if diff_lower > diff_higher:
-                        ixl = ixh - min_nchan
-                    else:
-                        ixh = ixl + min_nchan
+                # If necessary, distribute weights across the spectrum
+                if not data.wgt.shape == data.vis.shape:
+                    data.wgt = np.tile(data.wgt, (data.nchan, 1, 1))
+                    data.wgt = np.rollaxis(data.wgt, 1, 0)
 
-            # Clip the data to cover only the frequencies of interest
-            inu_TOPO = data.nu_TOPO[ixl:ixh]
-            inu_LSRK = data.nu_LSRK[:,ixl:ixh]
-            iv_LSRK = v_LSRK[:,ixl:ixh] 
-            inchan = inu_LSRK.shape[1]
-            ivis = data.vis[:,ixl:ixh,:]
-            iwgt = data.wgt[:,ixl:ixh,:]
+                # Convert the LSRK frequency grid to velocities
+                v_LSRK = sc.c * (1 - data.nu_LSRK / restfreq)
 
-            # Binning operations
-            print('Binning Time')
-            binned = True if chbin[i] > 1 else False
-            if binned:
-                bnchan = int(inchan / chbin[i])
-                bshape = (data.npol, -1, chbin[i], data.nvis)
-                wt = iwgt.reshape(bshape)
-                bvis = np.average(ivis.reshape(bshape), weights=wt, axis=2)
-                bwgt = np.sum(wt, axis=2)
-
-            # Channel censoring
-            if vcensor is not None:
-                cens_chans = np.ones(inchan, dtype='bool')
-                for j in range(len(vcensor)):
-                    if sgn_v < 0:
-                        vcens = (vcensor[j])[::-1]
-                    else:
-                        vcens = vcensor[j]
-                    cixl = np.abs(iv_LSRK[midstamp,:] - vcens[0]).argmin()
-                    cixh = np.abs(iv_LSRK[midstamp,:] - vcens[1]).argmin()
-                    cens_chans[cixl:cixh+1] = False
-                iwgt[:,cens_chans == False,:] = 0
-
-                if binned:
-                    bcens_chans = np.all(cens_chans.reshape((-1, chbin[i])),
-                                         axis=1)
-                    bwgt[:,cens_chans == False,:] = 0
-
-            # Pre-calculate the spectral covariance matrix 
-            # (** note: this assumes the Hanning kernel for ALMA **)
-            if binned:
-                scov = (5/16) * np.eye(bnchan) \
-                       + (3/32) * (np.eye(bnchan, k=-1) + np.eye(bnchan, k=1))
-            else:
-                scov = (3/8) * np.eye(inchan) \
-                       + (1/4) * (np.eye(inchan, k=-1) + np.eye(inchan, k=1)) \
-                       + (1/16) * (np.eye(inchan, k=-2) + np.eye(inchan, k=2))
-
-            # If well-conditioned (usually for binned), do direct inversion
-            if np.linalg.cond(scov) <= well_cond:
-                print('EB '+str(i)+' SCOV inverted with direct calculation.')
-                scov_inv = linalg.inv(scov)
-
-            # See if you can use Cholesky factorization
-            else:
-                chol = linalg.cholesky(scov)
-                if np.linalg.cond(chol) <= well_cond:
-                    print('EB '+str(i)+' SCOV inverted with Cholesky'
-                          + ' factorization')
-                    scov_inv = np.dot(linalg.inv(chol), linalg.inv(chol.T))
-
-                # Otherwise use SVD
+                # Fix direction of desired velocity bounds
+                if vra is None: vra = np.array([-1e5, 1e5])
+                dv, dvra = np.diff(v_LSRK, axis=1), np.diff(vra)
+                if np.logical_or(np.logical_and(np.all(dv < 0), np.all(dvra > 0)),
+                                 np.logical_and(np.all(dv < 0), np.all(dvra < 0))):
+                    vra_ = vra[::-1]
                 else:
-                    print('EB '+str(i)+' SCOV inverted with singular value'
-                          + ' decomposition')
-                    uu, ss, vv = linalg.svd(scov)
-                    scov_inv = np.dot(vv.T, np.dot(np.diag(ss**-1), uu.T))
+                    vra_ = 1. * vra
+                sgn_v = np.sign(np.diff(vra_)[0])
 
-            # Pre-calculate the log-likelihood normalization term
-            print('Log likelihood normalisation time!')
-            dterm = np.empty((data.npol, data.nvis))
-            for ii in range(data.nvis):
-                for jj in range(data.npol):
-                    _wgt = bwgt[jj,:,ii] if binned else iwgt[jj,:,ii]
-                    sgn, lndet = np.linalg.slogdet(scov / _wgt)
-                    dterm[jj,ii] = sgn * lndet
-            _ = np.prod(bvis.shape) if binned else np.prod(ivis.shape)
-            lnL0 = -0.5 * (_ * np.log(2 * np.pi) + np.sum(dterm))
+                # Find where to clip to lie within the desired velocity bounds
+                midstamp = int(data.nstamps / 2)
+                ixl = np.abs(v_LSRK[midstamp,:] - vra_[0]).argmin()
+                ixh = np.abs(v_LSRK[midstamp,:] - vra_[1]).argmin()
 
-            # Package the output data into the dictionary
-            if binned:
-                odata = dataset(data.um, data.vm, bvis, bwgt, inu_TOPO,
-                                inu_LSRK, data.tstamp)
-            else:
-                odata = dataset(data.um, data.vm, ivis, iwgt, inu_TOPO,
-                                inu_LSRK, data.tstamp)
-            out_dict[str(i)] = odata
+                # Adjust indices to ensure they are evenly divisible by chbin
+                if self.prescription != 'MCFOST':
+                    if np.logical_and((chbin[i] > 1), ((ixh - ixl) % chbin[i] != 0)):
+                        # bounded at upper edge only
+                        if np.logical_and((ixh == (data.nchan - 1)), (ixl > 0)):
+                            ixl -= 1
+                        # bounded at lower edge only
+                        elif np.logical_and((ixh < (data.nchan - 1)), (ixl == 0)):
+                            ixh += 1
+                        # bounded at both edges
+                        elif np.logical_and((ixh == (data.nchan - 1)), (ixl == 0)):
+                            ixh -= 1
+                        # unbounded on either side
+                        else:
+                            ixh += 1
+                else:
+                    # for the mcfost models all the ebs need to have the same number of channels
+                    if (ixh-ixl) != min_nchan:
+                        diff_lower = np.abs(v_LSRK[midstamp, ixl] - vra[0])
+                        diff_higher = np.abs(v_LSRK[midstamp, ixh] - vra[1])
+                        if diff_lower > diff_higher:
+                            ixl = ixh - min_nchan
+                        else:
+                            ixh = ixl + min_nchan
 
-            # Package additional information into the dictionary
-            out_dict['invcov_'+str(i)] = scov_inv
-            out_dict['lnL0_'+str(i)] = lnL0
-            out_dict['gcf_'+str(i)] = None
-            out_dict['corr_'+str(i)] = None
+                # Clip the data to cover only the frequencies of interest
+                inu_TOPO = data.nu_TOPO[ixl:ixh]
+                inu_LSRK = data.nu_LSRK[:,ixl:ixh]
+                iv_LSRK = v_LSRK[:,ixl:ixh] 
+                inchan = inu_LSRK.shape[1]
+                ivis = data.vis[:,ixl:ixh,:]
+                iwgt = data.wgt[:,ixl:ixh,:]
+
+                # Binning operations
+                print('Binning Time')
+                binned = True if chbin[i] > 1 else False
+                if binned:
+                    bnchan = int(inchan / chbin[i])
+                    bshape = (data.npol, -1, chbin[i], data.nvis)
+                    wt = iwgt.reshape(bshape)
+                    bvis = np.average(ivis.reshape(bshape), weights=wt, axis=2)
+                    bwgt = np.sum(wt, axis=2)
+
+                # Channel censoring
+                if vcensor is not None:
+                    cens_chans = np.ones(inchan, dtype='bool')
+                    for j in range(len(vcensor)):
+                        if sgn_v < 0:
+                            vcens = (vcensor[j])[::-1]
+                        else:
+                            vcens = vcensor[j]
+                        cixl = np.abs(iv_LSRK[midstamp,:] - vcens[0]).argmin()
+                        cixh = np.abs(iv_LSRK[midstamp,:] - vcens[1]).argmin()
+                        cens_chans[cixl:cixh+1] = False
+                    iwgt[:,cens_chans == False,:] = 0
+
+                    if binned:
+                        bcens_chans = np.all(cens_chans.reshape((-1, chbin[i])),
+                                         axis=1)
+                        bwgt[:,cens_chans == False,:] = 0
+
+                # Pre-calculate the spectral covariance matrix 
+                # (** note: this assumes the Hanning kernel for ALMA **)
+                if binned:
+                    scov = (5/16) * np.eye(bnchan) \
+                           + (3/32) * (np.eye(bnchan, k=-1) + np.eye(bnchan, k=1))
+                else:
+                    scov = (3/8) * np.eye(inchan) \
+                           + (1/4) * (np.eye(inchan, k=-1) + np.eye(inchan, k=1)) \
+                           + (1/16) * (np.eye(inchan, k=-2) + np.eye(inchan, k=2))
+
+                # If well-conditioned (usually for binned), do direct inversion
+                if np.linalg.cond(scov) <= well_cond:
+                    print('EB '+str(i)+' SCOV inverted with direct calculation.')
+                    scov_inv = linalg.inv(scov)
+
+                # See if you can use Cholesky factorization
+                else:
+                    chol = linalg.cholesky(scov)
+                    if np.linalg.cond(chol) <= well_cond:
+                        print('EB '+str(i)+' SCOV inverted with Cholesky'
+                              + ' factorization')
+                        scov_inv = np.dot(linalg.inv(chol), linalg.inv(chol.T))
+
+                    # Otherwise use SVD
+                    else:
+                        print('EB '+str(i)+' SCOV inverted with singular value'
+                              + ' decomposition')
+                        uu, ss, vv = linalg.svd(scov)
+                        scov_inv = np.dot(vv.T, np.dot(np.diag(ss**-1), uu.T))
+
+                # Pre-calculate the log-likelihood normalization term
+                print('Log likelihood normalisation time!')
+                dterm = np.empty((data.npol, data.nvis))
+                for ii in range(data.nvis):
+                    for jj in range(data.npol):
+                        _wgt = bwgt[jj,:,ii] if binned else iwgt[jj,:,ii]
+                        sgn, lndet = np.linalg.slogdet(scov / _wgt)
+                        dterm[jj,ii] = sgn * lndet
+                _ = np.prod(bvis.shape) if binned else np.prod(ivis.shape)
+                lnL0 = -0.5 * (_ * np.log(2 * np.pi) + np.sum(dterm))
+
+                # Package the output data into the dictionary
+                if binned:
+                    odata = dataset(data.um, data.vm, bvis, bwgt, inu_TOPO,
+                                    inu_LSRK, data.tstamp)
+                    np.savez(presaved_dict, data.um, data.vm, bvis, bwgt,
+                             inu_TOPO, inu_LSRK, data.tstamp, scov_inv, lnL0)
+                else:
+                    odata = dataset(data.um, data.vm, ivis, iwgt, inu_TOPO,
+                                    inu_LSRK, data.tstamp)
+                    np.savez(presaved_dict, data.um, data.vm, ivis, iwgt,
+                             inu_TOPO, inu_LSRK, data.tstamp, scov_inv, lnL0) 
+                out_dict[str(i)] = odata
+
+                # Package additional information into the dictionary
+                out_dict['invcov_'+str(i)] = scov_inv
+                out_dict['lnL0_'+str(i)] = lnL0
+                out_dict['gcf_'+str(i)] = None
+                out_dict['corr_'+str(i)] = None
 
         # Return the output dictionary
         return out_dict
@@ -782,9 +808,13 @@ class model:
     def sample_posteriors(self, msfile, vra=None, vcensor=None, kwargs=None,
                           restfreq=230.538e9, chbin=1, well_cond=300,
                           Nwalk=75, Ninits=20, Nsteps=1000, 
-                          outpost='stdout.h5', append=False, Nthreads=6, param=None):
+                          outpost='stdout.h5', append=False, Nthreads=6, param=None,
+                          mcmc='emcee'):
 
-        import emcee
+        if mcmc=='emcee':
+            import emcee
+        else:
+            import zeus
         from multiprocessing import Pool
         if Nthreads > 1:
             os.environ["OMP_NUM_THREADS"] = "1"
@@ -794,10 +824,16 @@ class model:
         infdata = self.fitdata(msfile, vra=vra, vcensor=vcensor, 
                                restfreq=restfreq, chbin=chbin, 
                                well_cond=well_cond)
+        
+        if param is not None:
+            self.param = param
+            self.priors_prescription = self.prescription+'_'+param
+        else:
+            self.priors_prescription = self.prescription
 
         # Initialize the parameters using random draws from the priors
         print('Initialising priors')
-        priors = importlib.import_module('priors_'+self.prescription)
+        priors = importlib.import_module('priors_'+self.priors_prescription)
         Ndim = len(priors.pri_pars)
         if self.prescription == 'MCFOST':
             p0 = self.mcfost_priors(priors, Nwalk, Ndim)
@@ -815,7 +851,7 @@ class model:
 
         # Acquire and store the GCF and CORR caches for iterative sampling
         print('Caching...')
-        infdata = self.cache(p0, infdata, restfreq, kwargs, param)
+        infdata = self.cache(p0, infdata, restfreq, kwargs)
 
         # Declare the data and kwargs as globals (for speed in pickling)
         global fdata
@@ -917,7 +953,7 @@ class model:
     """
         Function to acquire and store the GCF and CORR caches for iterative sampling
     """
-    def cache(self, p0, infdata, restfreq, kwargs, param=None):
+    def cache(self, p0, infdata, restfreq, kwargs):
         icube = None
         for i in range(infdata['Nobs']):
             if self.prescription != 'MCFOST' or i==0:
@@ -929,7 +965,7 @@ class model:
                                          dist=kwargs['dist'],
                                          return_holders=True,
                                          icube=icube,
-                                         param=param)
+                                         param=self.param)
             infdata['gcf_'+str(i)] = gcf
             infdata['corr_'+str(i)] = corr
     
@@ -939,16 +975,16 @@ class model:
     """
         Function to calculate a log-posterior sample.
     """
-    def log_posterior(self, theta, model=None, param=None):
+    def log_posterior(self, theta, model=None):
 
         # Calculate log-prior
-        priors = importlib.import_module('priors_'+self.prescription)
+        priors = importlib.import_module('priors_'+self.priors_prescription)
         lnT = np.sum(priors.logprior(theta)) * fdata['Nobs']
         if lnT == -np.inf:
             return -np.inf, -np.inf
 
         # Compute log-likelihood
-        lnL = self.log_likelihood(theta, fdata=fdata, kwargs=kw, model_vis=model, param=param)
+        lnL = self.log_likelihood(theta, fdata=fdata, kwargs=kw, model_vis=model)
 
         # return the log-posterior and the log-prior
         return lnL + lnT, lnT
@@ -957,7 +993,7 @@ class model:
     """
         Function to calculate a log-likelihood.
     """
-    def log_likelihood(self, theta, fdata=None, kwargs=None, model_vis=None, param=None):
+    def log_likelihood(self, theta, fdata=None, kwargs=None, model_vis=None):
 
         # Loop over observations to get likelihood
         logL = 0
@@ -972,13 +1008,13 @@ class model:
                 icube = None
 
             # Calculate the model
-            _mdl = self.modelset(_data, theta, restfreq=kwargs['restfreq'],
+            _mdl, icube = self.modelset(_data, theta, restfreq=kwargs['restfreq'],
                                  FOV=kwargs['FOV'], Npix=kwargs['Npix'], 
                                  dist=kwargs['dist'], chpad=kwargs['chpad'],
                                  doppcorr=kwargs['doppcorr'], 
                                  SRF=kwargs['SRF'], 
                                  gcf_holder=fdata['gcf_'+str(i)],
-                                 corr_cache=fdata['corr_'+str(i)], icube=icube)
+                                 corr_cache=fdata['corr_'+str(i)], icube=icube, param=self.param)
 
             # Spectrally bin the model visibilities if necessary
             # **technically wrong, since the weights are copied like this; 
@@ -1003,3 +1039,119 @@ class model:
             logL += -0.5 * np.tensordot(resid, np.dot(Cinv, var * resid))
 
         return logL
+    
+
+    def brute_force(self, msfile, vra=None, vcensor=None, kwargs=None,
+                          restfreq=230.538e9, chbin=1, well_cond=300,
+                          Nthreads=6, param=None):
+        """
+        Brute force search by parameter for the best fit
+        """
+        if param is None:
+            print('Must chose a parameter to brute force!')
+            return
+        else:
+            self.param = param
+            self.priors_prescription = self.prescription+'_'+param
+        
+        from multiprocessing import Pool
+        if Nthreads > 1:
+            os.environ["OMP_NUM_THREADS"] = "1"
+
+        # Parse the data into proper format
+        print('Fitting data')
+        infdata = self.fitdata(msfile, vra=vra, vcensor=vcensor, 
+                               restfreq=restfreq, chbin=chbin, 
+                               well_cond=well_cond)
+
+        # Initialize the parameters using random draws from the priors
+        print('Initialising priors')
+        priors = importlib.import_module('priors_'+self.priors_prescription)
+        Ndim = len(priors.pri_pars)
+        if self.prescription == 'MCFOST':
+            p0 = self.mcfost_priors(priors, 1, Ndim)
+        else:
+            p0 = np.empty((1, Ndim))
+            for ix in range(Ndim):
+                if ix == 9:
+                    p0[:,ix] = np.sqrt(2 * sc.k * p0[:,6] / (28 * (sc.m_p+sc.m_e)))
+                else:
+                    _ = [str(priors.pri_pars[ix][ip])+', '
+                         for ip in range(len(priors.pri_pars[ix]))]
+                    cmd = 'np.random.'+priors.pri_types[ix]+ \
+                          '('+"".join(_)+str(1)+')'
+                    p0[:,ix] = eval(cmd)
+
+        # Acquire and store the GCF and CORR caches for iterative sampling
+        print('Caching...')
+        infdata = self.cache(p0, infdata, restfreq, kwargs)
+
+        # Declare the data and kwargs as globals (for speed in pickling)
+        global fdata
+        global kw
+        fdata = copy.deepcopy(infdata)
+        kw = copy.deepcopy(kwargs)
+
+        # Populate keywords from kwargs dictionary
+        if 'restfreq' not in kw:
+            kw['restfreq'] = restfreq
+        if 'FOV' not in kw:
+            kw['FOV'] = 5.0
+        if 'Npix' not in kw:
+            kw['Npix'] = 256
+        if 'dist' not in kw:
+            kw['dist'] = 150.
+        if 'chpad' not in kw:
+            kw['chpad'] = 2
+        if 'Nup' not in kw:
+            kw['Nup'] = None
+        if 'noise_inject' not in kw:
+            kw['noise_inject'] = None
+        if 'doppcorr' not in kw:
+            kw['doppcorr'] = 'approx'
+        if 'SRF' not in kw:
+            kw['SRF'] = 'ALMA'
+
+        values = []
+
+        if param == 'PA':
+            for i in range(360):
+                values.append([i])
+        elif param == 'stellar_mass':
+            for i in range(100):
+                values.append([0.2+i/250])
+        elif param == 'vturb':
+            for i in range(100):
+                values.append([i/500])
+        elif param == 'dust_param':
+            for i in range(100):
+                values.append([10**(i/50)])
+        elif param == 'flaring_exp':
+            for i in range(100):
+                values.append([1+i/100])
+        else:
+            print("Caitlyn you haven't set that one up yet")
+            return
+        
+        with Pool(processes=Nthreads) as pool:
+            posteriors_priors = pool.map(self.log_posterior, values) 
+
+        ln_posteriors = []
+        ln_priors = []
+        for pair in posteriors_priors:
+            ln_posteriors.append(pair[0])
+            ln_priors.append(pair[1])
+
+        outfile = param+'.npz'
+        np.savez(outfile, values, ln_posteriors, ln_priors)
+
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        plt.figure()
+        plt.plot(values, ln_posteriors)
+        plt.title('Log posterior as a function of ' + param)
+        plt.xlabel(param)
+        plt.ylabel('Log posterior')
+        plt.savefig(param+'lnposterior.pdf')
