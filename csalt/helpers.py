@@ -122,18 +122,20 @@ def write_MS(data_dict, outfile='out.ms', resid=False, direct_file=False):
     # Loop over the observations to pack into the MS file
     ms = casatools.ms()
     for EB in range(data_dict['Nobs']):
+        print(EB)
         # open the MS file for this EB
         ms.open(outfile, nomodify=False)
         ms.selectinit(datadescid=EB)
 
         # pull the data array
         d = ms.getdata(['data'])
+        model, cube = data_dict[str(EB)]
 
         # replace with the model array or the residuals
         if resid:
-            d['data'] -= data_dict[str(EB)].vis
+            d['data'] -= model.vis
         else:
-            d['data'] = data_dict[str(EB)].vis
+            d['data'] = model.vis
         ms.putdata(d)
 
         # close the MS file
@@ -144,7 +146,7 @@ def write_MS(data_dict, outfile='out.ms', resid=False, direct_file=False):
 
 """ TCLEAN WRAPPER """
 def imagecube(msfile, outfile,
-              mk_kepmask=True, kepmask_kwargs=None, tclean_kwargs=None,
+              mk_kepmask=False, kepmask_kwargs=None, tclean_kwargs=None,
               dirty_only=False):
 
     # Populate tclean keywords

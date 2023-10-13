@@ -250,7 +250,10 @@ class model:
             mu_DEC = pars[-1]
 
         if param is not None:
-            param_dict_form = {param: pars[0]}
+            #param_dict_form = {param: pars[0]}
+            param_dict_form = {}
+            for i in range(len(param)):
+                param_dict_form[param[i]] = pars[i]
             pars = param_dict_form
 
         # *Exact* Doppler correction calculation
@@ -643,6 +646,7 @@ class model:
                             ixh = ixl + min_nchan
 
                 # Clip the data to cover only the frequencies of interest
+                print(ixl, ixh)
                 inu_TOPO = data.nu_TOPO[ixl:ixh]
                 inu_LSRK = data.nu_LSRK[:,ixl:ixh]
                 iv_LSRK = v_LSRK[:,ixl:ixh] 
@@ -827,7 +831,9 @@ class model:
         
         if param is not None:
             self.param = param
-            self.priors_prescription = self.prescription+'_'+param
+            self.priors_prescription = self.prescription
+            for parameter in self.param:
+                self.priors_prescription += '_'+parameter
         else:
             self.priors_prescription = self.prescription
 
@@ -879,7 +885,16 @@ class model:
         if 'SRF' not in kw:
             kw['SRF'] = 'ALMA'
 
-        if not append:
+        if mcmc=='zeus':
+            print('Running mcmc with zeus')
+            with Pool(processes=Nthreads) as pool:
+                isamp = zeus.EnsembleSampler(Nwalk, Ndim, self.log_posterior,
+                                              pool=pool, verbose=True)
+                cb0 = zeus.callbacks.SaveProgressCallback(filename=outpost, ncheck=100)
+                t0 = time.time()
+                isamp.run_mcmc(p0, Nsteps, progress=True, callbacks=[cb0]) 
+            t1 = time.time()
+        elif not append:
             # Initialize the MCMC walkers
             print('Initialising walkers')
             with Pool(processes=Nthreads) as pool:
@@ -905,17 +920,17 @@ class model:
                 samp.run_mcmc(p00, Nsteps, progress=True)
             t1 = time.time()
             print('backend run in ', t1-t0)
-
         else:
             # Load the old backend
             new_backend = emcee.backends.HDFBackend(outpost)
+            print("Initial size: {0}".format(new_backend.iteration))
             
             # Continue sampling the posterior distribution
             with Pool(processes=Nthreads) as pool:
                 samp = emcee.EnsembleSampler(Nwalk, Ndim, self.log_posterior,
                                              pool=pool, backend=new_backend)
                 t0 = time.time()
-                samp.run_mcmc(None, Nsteps, progress=True)
+                samp.run_mcmc(None, Nsteps-new_backend.iteration, progress=True)
             t1 = time.time()
 
         print('\n\n    This run took %.2f hours' % ((t1 - t0) / 3600))
@@ -1043,16 +1058,21 @@ class model:
 
     def brute_force(self, msfile, vra=None, vcensor=None, kwargs=None,
                           restfreq=230.538e9, chbin=1, well_cond=300,
-                          Nthreads=6, param=None):
+                          Nthreads=6, param=None, directory='.'):
         """
         Brute force search by parameter for the best fit
         """
         if param is None:
             print('Must chose a parameter to brute force!')
             return
+        if len(param) > 2:
+            print('Can only brute force up to two params at a time!')
+            return
         else:
             self.param = param
-            self.priors_prescription = self.prescription+'_'+param
+            self.priors_prescription = self.prescription
+            for parameter in self.param:
+                self.priors_prescription += '_'+parameter
         
         from multiprocessing import Pool
         if Nthreads > 1:
@@ -1112,8 +1132,58 @@ class model:
         if 'SRF' not in kw:
             kw['SRF'] = 'ALMA'
 
-        values = []
 
+        # this is assuming one parameter
+        values = None
+
+        for parameter in param:
+            if values == None:
+                values = self.param_ranges(parameter)
+            else:
+                second_values = self.param_ranges(parameter)
+                full_values = []
+                for value in values:
+                    for second_value in second_values:
+                        full_values.append([value, second_value])
+                values = full_values
+        
+        with Pool(processes=Nthreads) as pool:
+            posteriors_priors = pool.map(self.log_posterior, values) 
+
+        ln_posteriors = []
+        ln_priors = []
+        for pair in posteriors_priors:
+            ln_posteriors.append(pair[0])
+            ln_priors.append(pair[1])
+
+        outfile = directory+'/'+param+'.npz'
+        np.savez(outfile, values, ln_posteriors, ln_priors)
+
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        if len(param) == 1:
+            plt.figure()
+            plt.plot(values, ln_posteriors)
+            plt.title('Log posterior as a function of ' + param)
+            plt.xlabel(param)
+            plt.ylabel('Log posterior')
+            plt.savefig(directory+'/'+param+'lnposterior.pdf')
+        else:
+            plt.figure()
+            plt.pcolormesh(masses, vturb, red_chisqs)
+            plt.title('Reduced chisq as a function of Mass and Vturb')
+            plt.xlabel('Mass (Msun)')
+            plt.ylabel('Vturb (km/s)')
+            plt.colorbar()
+            plt.savefig('line_profile_grid.png')
+            plt.show()
+
+
+
+    def param_ranges(param):
+        values = []
         if param == 'PA':
             for i in range(360):
                 values.append([i])
@@ -1133,25 +1203,4 @@ class model:
             print("Caitlyn you haven't set that one up yet")
             return
         
-        with Pool(processes=Nthreads) as pool:
-            posteriors_priors = pool.map(self.log_posterior, values) 
-
-        ln_posteriors = []
-        ln_priors = []
-        for pair in posteriors_priors:
-            ln_posteriors.append(pair[0])
-            ln_priors.append(pair[1])
-
-        outfile = param+'.npz'
-        np.savez(outfile, values, ln_posteriors, ln_priors)
-
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-
-        plt.figure()
-        plt.plot(values, ln_posteriors)
-        plt.title('Log posterior as a function of ' + param)
-        plt.xlabel(param)
-        plt.ylabel('Log posterior')
-        plt.savefig(param+'lnposterior.pdf')
+        return values
