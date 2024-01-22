@@ -4,51 +4,65 @@ import numpy as np
 from csalt.model import *
 from csalt.helpers import *
 
-# Read in the data MS
-ddict = read_MS('testdata/Sz129_CO.ms') 
+data = '../brute_force_visibility/full/lsrk.ms'
+directory = 'flaherty_vals'
 
-# Instantiate a csalt model
-cm = model('CSALT')
+# # Read in the data MS
+# ddict = read_MS(data)
 
-# Define some fixed attributes for the modeling
-fixed_kw = {'FOV': 5.11, 'Npix': 512, 'dist': 161, 
-            'Nup': 1, 'doppcorr': 'approx'}
+# # Instantiate a csalt model
+# cm = model('MCFOST')
 
-# Set the CSALT model parameters
-pars = np.array([-33, 150, 1.1, 120, 0.3, 1.5, 120, -0.5, 20., 217, 
-                 2.2, -1, 4100, 0, 0])
+# # Define some fixed attributes for the modeling
+# fixed_kw = {'FOV': 6.375, 'Npix': 256, 'dist': 144.5, 'restfreq':345.796e9, 'vsyst':6.04} 
 
-# Calculate a model dictionary; write it to model and residual MS files
-mdict = cm.modeldict(ddict, pars, kwargs=fixed_kw)
-write_MS(mdict, outfile='testdata/Sz129_MODEL.ms')
-write_MS(mdict, outfile='testdata/Sz129_RESID.ms', resid=True)
+# # Set the CSALT model parameters
+
+# # image plane
+# pars = np.array([36.6, 0.4, 17.5, 250, 7, 1.3, 155, 1e-4, 0.0, 0.0004, 100])
+
+# # vis fit
+# #pars = np.array([36.0, 0.59, 7.2, 160.4, 0.1, 1.665, 158.1, 1e-4, 0.198, 0.042, 925.6])
+
+# # flaherty vals
+# #pars = np.array([36.0, 0.54, 18.6, 278, 8, 1.315, 154.8, 1e-4, 0.07, 4e-5, 1000])
 
 
-# Define some tclean keywords to be used in all imaging
-tclean_kw = {'imsize': 1500, 'start': '2.35km/s', 'width': '0.35km/s',
-             'nchan': 7, 'restfreq': '230.538GHz', 'cell': '0.01arcsec',
-             'scales': [0, 10, 30, 60], 'niter': 50000,
-             'robust': 1.0, 'threshold': '3mJy', 'uvtaper': '0.04arcsec'}
+# # Calculate a model dictionary; write it to model and residual MS files
+# print("Model Dictionary")
+# mdict = cm.modeldict(ddict, pars, kwargs=fixed_kw)
+# write_MS(mdict, outfile=directory+'/DMTau_MODEL.ms')
+# write_MS(mdict, outfile=directory+'/DMTau_RESID.ms', resid=True)
 
-# Define some Keplerian mask keywords
-kepmask_kw = {'inc': 33, 'PA': 150, 'mstar': 0.85, 'dist': 161, 'vlsr': 4100,
-              'r_max': 1.1, 'nbeams': 1.5, 'zr': 0.2}
 
-# Image the data, model, and residual cubes
-imagecube('testdata/Sz129_CO.ms', 'testdata/Sz129_DATA', 
-          kepmask_kwargs=kepmask_kw, tclean_kwargs=tclean_kw)
+# # Define some tclean keywords to be used in all imaging
+# tclean_kw = {'imsize': 1500, 'start': '4.5km/s', 'width': '0.5km/s',
+#              'nchan': 7, 'restfreq': '345.796GHz', 'cell': '0.01arcsec',
+#              'scales': [0, 10, 30, 60], 'niter': 100,
+#              'robust': 1.0, 'threshold': '3mJy', 'uvtaper': '0.04arcsec'}
 
-tclean_kw['mask'] = 'testdata/Sz129_DATA.mask'
-imagecube('testdata/Sz129_MODEL.ms', 'testdata/Sz129_MODEL', 
-          mk_kepmask=False, tclean_kwargs=tclean_kw)
-imagecube('testdata/Sz129_RESID.ms', 'testdata/Sz129_RESID',
-          mk_kepmask=False, tclean_kwargs=tclean_kw)
+# # Define some Keplerian mask keywords
+# kepmask_kw = {'inc': 36.6, 'PA': 155, 'mstar': 0.4, 'dist': 144.5, 'vlsr': 6100,
+#               'r_max': 1.1, 'nbeams': 1.5, 'zr': 0.2}
+
+# # Image the data, model, and residual cubes
+
+# print("Imaging cubes")
+
+# imagecube(data, directory+'/DMTau_DATA', 
+#           kepmask_kwargs=kepmask_kw, tclean_kwargs=tclean_kw)
+
+# #tclean_kw['mask'] = 'testdata/DMTau_EB3_DATA.mask'
+# imagecube(directory+'/DMTau_MODEL.ms', directory+'/DMTau_MODEL', 
+#           mk_kepmask=False, tclean_kwargs=tclean_kw)
+# imagecube(directory+'/DMTau_RESID.ms', directory+'/DMTau_RESID',
+#           mk_kepmask=False, tclean_kwargs=tclean_kw)
 
 
 
 ### Show the results!
 
-cubes = ['testdata/Sz129_DATA', 'testdata/Sz129_MODEL', 'testdata/Sz129_RESID']
+cubes = [directory+'/DMTau_DATA', directory+'/DMTau_MODEL', directory+'/DMTau_RESID']
 lbls = ['data', 'model', 'residual']
 
 # Export the cubes to FITS format
@@ -60,23 +74,27 @@ for i in range(len(cubes)):
 
 # Plot a subset of the cube as a direct comparison
 import importlib
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.colorbar import Colorbar
 from matplotlib.patches import Ellipse
 from astropy.io import fits
 import scipy.constants as sc
-_ = importlib.import_module('plot_setups')
-plt.style.use(['default', '/home/sandrews/mpl_styles/nice_img.mplstyle'])
+#_ = importlib.import_module('plot_setups')
+#plt.style.use(['default', '/home/sandrews/mpl_styles/nice_img.mplstyle'])
 import cmasher as cmr
 
 nchans = 7
 
 fig, axs = plt.subplots(nrows=3, ncols=nchans, figsize=(7.5, 3.2))
 fl, fr, fb, ft, hs, ws = 0.06, 0.88, 0.13, 0.99, 0.12, 0.03
-xlims = [1.1, -1.1]
-ylims = [-1.1, 1.1]
+xlims = [2.5, -2.5]
+ylims = [-2.5, 2.5]
 
 for ia in range(len(cubes)):
+
+    print('new cube')
 
     # Load the cube and header data
     hdu = fits.open(cubes[ia]+'.fits')
@@ -92,9 +110,12 @@ for ia in range(len(cubes)):
 
     # spectral information
     vv = h['CRVAL3'] + h['CDELT3'] * (np.arange(h['NAXIS3']) - (h['CRPIX3']-1))
-    ff = 230.538e9 * (1 - vv / sc.c)
+    print(vv)
+    ff = 345.796e9 * (1 - vv / sc.c)
 
     for i in range(nchans):
+
+        print(i)
 
         # in-cube index
         j = i + 0
@@ -108,8 +129,14 @@ for ia in range(len(cubes)):
         pax = ax.get_position()
 
         # plot the channel map
-        im = ax.imshow(Tb, origin='lower', cmap='cmr.cosmic', extent=ext,
-                       aspect='auto', vmin=0, vmax=25)
+        vmin = 0
+        vmax = 80
+        cmap = 'cmr.cosmic'
+        if ia == 2:
+            vmin = -vmax
+            cmap = 'cmr.redshift'
+        im = ax.imshow(Tb, origin='lower', cmap=cmap, extent=ext,
+                       aspect='auto', vmin=vmin, vmax=vmax)
 
         # set map boundaries
         ax.set_xlim(xlims)
@@ -138,7 +165,8 @@ for ia in range(len(cubes)):
         if np.logical_and(ia == 2, i == 0):
             ax.set_xlabel('RA offset  ($^{\prime\prime}$)')
             ax.set_ylabel('DEC offset  ($^{\prime\prime}$)')
-            ax.spines[['right', 'top']].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False)
         else:
             ax.axis('off')
             ax.set_xticks([])
@@ -153,5 +181,5 @@ cb = Colorbar(ax=cbax, mappable=im, orientation='vertical',
 cb.set_label('$T_{\\rm b}$  (K)', rotation=270, labelpad=13)
 
 fig.subplots_adjust(left=fl, right=fr, bottom=fb, top=ft, hspace=hs, wspace=ws)
-fig.savefig('testdata/demo_compare.pdf')
+fig.savefig(directory+'/demo_compare_new.pdf')
 fig.clf()

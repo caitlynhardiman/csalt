@@ -234,7 +234,7 @@ def imagecube(msfile, outfile,
 
         # Image
         kw['niter'] = niter_hold
-        tclean(msfile, imagename=outfile, **kw)
+        tclean(msfile, imagename=outfile, parallel=True, **kw)
 
     return None
 

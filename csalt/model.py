@@ -15,6 +15,7 @@ from scipy import linalg
 from scipy import stats
 from vis_sample import vis_sample
 from vis_sample.classes import SkyImage
+from multiprocess.pool import Pool
 
 
 """
@@ -87,12 +88,12 @@ class model:
         Generate a cube 
     """
     def cube(self, velax, pars, 
-             restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, cfg_dict={}):
+             restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, cfg_dict={}, vsyst=None):
 
         # Parse inputs
         if isinstance(velax, list): 
             velax = np.array(velax)
-        fixed = restfreq, FOV, Npix, dist, cfg_dict
+        fixed = restfreq, FOV, Npix, dist, cfg_dict, vsyst
 
         # Load the appropriate prescription
         pfile = 'parametric_disk_'+self.prescription
@@ -171,6 +172,10 @@ class model:
             kw['SRF'] = 'ALMA'
         if 'cfg_dict' not in kw:
             kw['cfg_dict'] = {}
+        if 'vsyst' not in kw:
+            kw['vsyst'] = None
+        if 'param' not in kw:
+            kw['param'] = None
 
         # List of input EBs
         EBlist = range(ddict['Nobs'])
@@ -189,7 +194,9 @@ class model:
                                                noise_inject=kw['noise_inject'],
                                                doppcorr=kw['doppcorr'], 
                                                SRF=kw['SRF'],
-                                               cfg_dict=kw['cfg_dict'])
+                                               cfg_dict=kw['cfg_dict'],
+                                               vsyst=kw['vsyst'],
+                                               param=kw['param'])
             return m_
         else:
             p_, n_ = copy.deepcopy(ddict), copy.deepcopy(ddict)
@@ -204,7 +211,9 @@ class model:
                                                 noise_inject=kw['noise_inject'],
                                                 doppcorr=kw['doppcorr'],
                                                 SRF=kw['SRF'],
-                                                cfg_dict=kw['cfg_dict'])
+                                                cfg_dict=kw['cfg_dict'],
+                                                vsyst=kw['vsyst'],
+                                                param=kw['param'])
             return p_, n_
 
 
@@ -214,7 +223,7 @@ class model:
                  restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, chpad=2, 
                  Nup=None, noise_inject=None, doppcorr='approx', SRF='ALMA',
                  gcf_holder=None, corr_cache=None, return_holders=False,
-                 cfg_dict={}, icube=None, param=None):
+                 cfg_dict={}, vsyst=None, icube=None, param=None):
 
         """ Prepare the spectral grids: format = [timestamps, channels] """
         # Pad the LSRK frequencies
@@ -266,7 +275,7 @@ class model:
                 if icube is None:
                     icube = self.cube(vel[itime,:], pars, restfreq=restfreq,
                                       FOV=FOV, Npix=Npix, dist=dist, 
-                                      cfg_dict=cfg_dict)
+                                      cfg_dict=cfg_dict, vsyst=vsyst)
 
                 # visibility indices for this timestamp only
                 ixl = np.min(np.where(dset.tstamp == itime))
@@ -292,7 +301,8 @@ class model:
             # make a cube
             if icube is None:
                 icube = self.cube(v_model, pars, restfreq=restfreq,
-                                  FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict)
+                                  FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict,
+                                  vsyst=vsyst)
 
             # sample the FFT on the (u, v) spacings
             if return_holders:
@@ -325,7 +335,8 @@ class model:
             # make a cube
             if icube is None:
                 icube = self.cube(vel[0,:], pars, restfreq=restfreq,
-                              FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict)
+                              FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict,
+                              vsyst=vsyst)
 
             # sample the FFT on the (u, v) spacings
             if return_holders:
@@ -594,6 +605,9 @@ class model:
                 
             else:
 
+                global scov
+                global _wgt
+
                 # Pull the dataset object for this execution
                 data = data_dict[str(i)]
 
@@ -640,19 +654,19 @@ class model:
                     if (ixh-ixl) != min_nchan:
                         diff_lower = np.abs(v_LSRK[midstamp, ixl] - vra[0])
                         diff_higher = np.abs(v_LSRK[midstamp, ixh] - vra[1])
-                        if diff_lower > diff_higher:
+                        if np.logical_and((diff_lower > diff_higher), (ixl > 0)):
                             ixl = ixh - min_nchan
                         else:
                             ixh = ixl + min_nchan
 
                 # Clip the data to cover only the frequencies of interest
-                print(ixl, ixh)
                 inu_TOPO = data.nu_TOPO[ixl:ixh]
                 inu_LSRK = data.nu_LSRK[:,ixl:ixh]
                 iv_LSRK = v_LSRK[:,ixl:ixh] 
                 inchan = inu_LSRK.shape[1]
                 ivis = data.vis[:,ixl:ixh,:]
                 iwgt = data.wgt[:,ixl:ixh,:]
+
 
                 # Binning operations
                 print('Binning Time')
@@ -715,11 +729,22 @@ class model:
                 # Pre-calculate the log-likelihood normalization term
                 print('Log likelihood normalisation time!')
                 dterm = np.empty((data.npol, data.nvis))
-                for ii in range(data.nvis):
-                    for jj in range(data.npol):
-                        _wgt = bwgt[jj,:,ii] if binned else iwgt[jj,:,ii]
-                        sgn, lndet = np.linalg.slogdet(scov / _wgt)
-                        dterm[jj,ii] = sgn * lndet
+                _wgt = bwgt if binned else iwgt
+                # for ii in range(data.nvis):
+                #     print(ii, '/', range(data.nvis))
+                #     for jj in range(data.npol):
+                #         _wgt = bwgt[jj,:,ii] if binned else iwgt[jj,:,ii]
+                #         sgn, lndet = np.linalg.slogdet(scov / _wgt)
+                #         dterm[jj,ii] = sgn * lndet
+                input_args = [(ii, jj) for ii in range(data.nvis) for jj in range(data.npol)]
+                with Pool() as p:
+                    print("Starting multiprocessing")
+                    results = p.map(determinant, input_args)
+                for result in results:
+                    jj = result[0]
+                    ii = result[1]
+                    det = result[2]
+                    dterm[jj, ii] = det                
                 _ = np.prod(bvis.shape) if binned else np.prod(ivis.shape)
                 lnL0 = -0.5 * (_ * np.log(2 * np.pi) + np.sum(dterm))
 
@@ -820,8 +845,8 @@ class model:
         else:
             import zeus
         from multiprocessing import Pool
-        if Nthreads > 1:
-            os.environ["OMP_NUM_THREADS"] = "1"
+        # if Nthreads > 1:
+        #     os.environ["OMP_NUM_THREADS"] = "1"
 
         # Parse the data into proper format
         print('Fitting data')
@@ -884,6 +909,8 @@ class model:
             kw['doppcorr'] = 'approx'
         if 'SRF' not in kw:
             kw['SRF'] = 'ALMA'
+        if 'vsyst' not in kw:
+            kw['vsyst'] = None
 
         if mcmc=='zeus':
             print('Running mcmc with zeus')
@@ -978,6 +1005,7 @@ class model:
                                          FOV=kwargs['FOV'],
                                          Npix=kwargs['Npix'], 
                                          dist=kwargs['dist'],
+                                         vsyst=kwargs['vsyst'],
                                          return_holders=True,
                                          icube=icube,
                                          param=self.param)
@@ -1029,7 +1057,8 @@ class model:
                                  doppcorr=kwargs['doppcorr'], 
                                  SRF=kwargs['SRF'], 
                                  gcf_holder=fdata['gcf_'+str(i)],
-                                 corr_cache=fdata['corr_'+str(i)], icube=icube, param=self.param)
+                                 corr_cache=fdata['corr_'+str(i)], 
+                                 vsyst=kwargs['vsyst'], icube=icube, param=self.param)
 
             # Spectrally bin the model visibilities if necessary
             # **technically wrong, since the weights are copied like this; 
@@ -1051,6 +1080,7 @@ class model:
 
             # Compute the log-likelihood (** still needs constant term)
             Cinv = fdata['invcov_'+str(i)]
+            # Cinv = np.eye(len(Cinv))
             logL += -0.5 * np.tensordot(resid, np.dot(Cinv, var * resid))
 
         return logL
@@ -1132,8 +1162,6 @@ class model:
         if 'SRF' not in kw:
             kw['SRF'] = 'ALMA'
 
-
-        # this is assuming one parameter
         values = None
 
         for parameter in param:
@@ -1144,7 +1172,7 @@ class model:
                 full_values = []
                 for value in values:
                     for second_value in second_values:
-                        full_values.append([value, second_value])
+                        full_values.append([value[0], second_value[0]])
                 values = full_values
         
         with Pool(processes=Nthreads) as pool:
@@ -1156,7 +1184,7 @@ class model:
             ln_posteriors.append(pair[0])
             ln_priors.append(pair[1])
 
-        outfile = directory+'/'+param+'.npz'
+        outfile = directory+'/'+param[0]+param[1]+'.npz'
         np.savez(outfile, values, ln_posteriors, ln_priors)
 
         import matplotlib
@@ -1172,27 +1200,36 @@ class model:
             plt.savefig(directory+'/'+param+'lnposterior.pdf')
         else:
             plt.figure()
-            plt.pcolormesh(masses, vturb, red_chisqs)
-            plt.title('Reduced chisq as a function of Mass and Vturb')
-            plt.xlabel('Mass (Msun)')
-            plt.ylabel('Vturb (km/s)')
+            x, y = zip(*values)
+            x = np.unique(x)
+            y = np.unique(y)
+            posteriors = []
+            for i in range(len(y)):
+                lnp = []
+                for j in range(len(x)):
+                   lnp.append(ln_posteriors[j*len(y)+i]) 
+                posteriors.append(lnp)
+            plt.pcolormesh(x, y, posteriors)
+            plt.title('Log posterior as a function of ' + param[0] + ' and ' + param[1])
+            plt.xlabel(param[0])
+            plt.ylabel(param[1])
             plt.colorbar()
-            plt.savefig('line_profile_grid.png')
+            plt.savefig(directory+'/'+param[0]+'_'+param[1]+'_'+'lnposterior.pdf')
             plt.show()
 
 
 
-    def param_ranges(param):
+    def param_ranges(self, param):
         values = []
         if param == 'PA':
             for i in range(360):
                 values.append([i])
         elif param == 'stellar_mass':
-            for i in range(100):
-                values.append([0.2+i/250])
+            for i in range(50):
+                values.append([0.2+i/125])
         elif param == 'vturb':
-            for i in range(100):
-                values.append([i/500])
+            for i in range(50):
+                values.append([i/250])
         elif param == 'dust_param':
             for i in range(100):
                 values.append([10**(i/50)])
@@ -1204,3 +1241,8 @@ class model:
             return
         
         return values
+
+def determinant(args):
+    ii, jj = args
+    sgn, lndet = np.linalg.slogdet(scov/_wgt[jj,:,ii])
+    return (jj, ii, sgn*lndet)

@@ -1,20 +1,23 @@
 # Import libraries
 import os, sys
-from csalt import *
-
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from csalt.model import *
+from csalt.helpers import *
+import multiprocessing
+from functools import partial
 
 # Class definition
 class setup_fit():
 
     def __init__(self,
                  msfile=None,
-                 code=None,
-                 postfile='/DMTau.h5',
                  append: bool = False,
                  mpi: bool = False,
-                 mode='iter',
                  param=None,
                  vra_fit=[4.06e3, 8.06e3],
+                 vsyst=None,
                  vcensor=None,
                  nwalk=128,
                  ninits=300,
@@ -30,23 +33,13 @@ class setup_fit():
             print('Need to give an ms file as input!')
             return
         
-        if postfile is None:
-            print('Please give a name for the backend')
-            return
+        # code is mcfost
+        self.mtype = 'MCFOST'
         
-        # Model Setups
-        if code is None:
-            print('Using mcfost as default code for modelling')
-            self.mtype = 'MCFOST'
-        else:
-            self.mtype = code
-        self.mode = mode
         self.vra_fit = vra_fit
         self.vcensor = vcensor
         # I/O
         self.datafile = msfile
-        self.post_dir = 'storage/posteriors/'+self.mtype
-        self.postfile = postfile
         # Inference Setups
         self.nwalk = nwalk
         self.ninits = ninits
@@ -59,41 +52,31 @@ class setup_fit():
         self.Npix = Npix
         self.dist = dist
         self.cfg_dict = cfg_dict
-        self.fixed = nu_rest, FOV, Npix, dist, cfg_dict
         self.mpi = mpi
-        self.param = param
+        self.param = None
+        self.vsyst = vsyst
 
-        if param==None:
-            self.priorfile = self.mtype
+        if param is not None:
+            print('Using param!')
+            self.param = param
+            self.priors_prescription = self.mtype
+            for parameter in self.param:
+                self.priors_prescription += '_'+parameter
         else:
-            self.priorfile = self.mtype+'_'+self.param
+            self.priors_prescription = self.mtype
 
+        # Instantiate a csalt model
+        print('Making model')
+        self.cm = model(self.mtype)
+        self.cm.param = self.param
 
-        if self.mpi:
-            from schwimmbad import MPIPool
-            from mpi4py import MPI
-            comm = MPI.COMM_WORLD
-            rank = comm.Get_rank()
-            print(rank)
-            if rank == 0:
-                self._setup_priors_and_postdir()
-        else:
-            self._setup_priors_and_postdir()
+        # Define some fixed attributes for the modeling
+        self.fixed_kw = {'FOV': self.FOV, 'Npix': self.Npix, 'dist': self.dist, 'vsyst': self.vsyst} 
 
-
-    def _setup_priors_and_postdir(self):
-        """
-        Sets up the prior functions and if necessary, makes the posteriors
-        directory
-        """
-        if not os.path.exists('priors_'+self.priorfile+'.py'):
-            print('There is no such file "priors_"+self.mtype+".py".\n')
-            sys.exit()
-        else:
-            os.system('rm priors.py')
-            os.system('cp priors_'+self.priorfile+'.py priors.py')
-        if not os.path.exists(self.post_dir):
-            os.system('mkdir -p '+self.post_dir)
+        # Import priors
+        print('Initialising priors')
+        self.priors = importlib.import_module('priors_'+self.priors_prescription)
+        self.Ndim = len(self.priors.pri_pars)             
 
 
     def mcmc_fit(self):
@@ -102,16 +85,10 @@ class setup_fit():
         No extra parameters required
         """
         
-        run_emcee(self.datafile, self.fixed, code=self.mtype, vra=self.vra_fit,
-                  vcensor=self.vcensor, nwalk=self.nwalk, ninits=self.ninits,
-                  nsteps=self.nsteps, outfile=self.post_dir+self.postfile,
-                  mode=self.mode, nthreads=self.nthreads, append=self.append,
-                  mpi=self.mpi, param=self.param)
-
-        sample_posteriors(self, msfile, vra=None, vcensor=None, kwargs=None,
-                          restfreq=230.538e9, chbin=1, well_cond=300,
-                          Nwalk=75, Ninits=20, Nsteps=1000, 
-                          outpost='stdout.h5', append=False, Nthreads=6, param=None)
+        self.cm.sample_posteriors(self.msfile, kwargs=self.fixed_kw,
+                         vra=self.vra_fit, restfreq=self.nu_rest, 
+                         Nwalk=75, Nthreads=6, Ninits=10, Nsteps=50,
+                         outpost='DMTau_EB3.DATA.h5', param=None)
         
 
     def initialise(self):
@@ -120,47 +97,139 @@ class setup_fit():
         single log likelihood value etc.
         """
         
-        ndim = len(pri_pars)
-        print(ndim)
-        data = fitdata(self.datafile, vra=self.vra_fit, nu_rest=self.nu_rest, chbin=3)
-        p0 = init_priors(nwalk=self.nwalk, ndim=ndim)
-        data = build_cache(p0, data, self.fixed, code=self.mtype, mode=self.mode, param = self.param)
-        return data
+        infdata = self.cm.fitdata(self.datafile, vra=self.vra_fit, restfreq=self.nu_rest)
+        p0 = self.cm.mcfost_priors(self.priors, self.nwalk, self.Ndim)
+        infdata = self.cm.cache(p0, infdata, self.nu_rest, self.fixed_kw)
+        return infdata
     
 
-    def get_probability(self, data, theta):
+    def get_probability(self, infdata, theta):
         """
         Returns the log probability of a specific theta array fitting the data
         Need to run initialise function first
         """
 
-        set_globals(data, self.fixed)
-        log_posterior, log_prior = lnprob(theta, code_=self.mtype)
-        return log_posterior, log_prior
+        global fdata
+        global kw
+        fdata = copy.deepcopy(infdata)
+        kw = copy.deepcopy(self.fixed_kw)
+
+                # Populate keywords from kwargs dictionary
+        if 'restfreq' not in kw:
+            kw['restfreq'] = self.nu_rest
+        if 'FOV' not in kw:
+            kw['FOV'] = 5.0
+        if 'Npix' not in kw:
+            kw['Npix'] = 256
+        if 'dist' not in kw:
+            kw['dist'] = 150.
+        if 'chpad' not in kw:
+            kw['chpad'] = 2
+        if 'Nup' not in kw:
+            kw['Nup'] = None
+        if 'noise_inject' not in kw:
+            kw['noise_inject'] = None
+        if 'doppcorr' not in kw:
+            kw['doppcorr'] = 'approx'
+        if 'SRF' not in kw:
+            kw['SRF'] = 'ALMA'
+
+
+        loglikelihood = self.cm.log_likelihood(theta, fdata=fdata, kwargs=kw)
+
+        priors = importlib.import_module('priors_'+self.priors_prescription)
+        lnT = np.sum(priors.logprior(theta)) * fdata['Nobs']
+        print('Priors', lnT)
+
+        return loglikelihood+lnT
     
 
-    def plot_visibilities(self, data, theta, mcube=None):
-        """
-        Plots the difference between the model visibilities and data visibilities
-        by EB for given polarisation and channel
-        Need to run initialise function first
-        """
-        plot(data, self.fixed, self.mtype, theta, mcube)
+    def brute_force(self, data):
 
-    def model_to_model(self, theta):
         """
-        Runs a model to model fit so we can verify that the method is working
+        Needs to be called after initialise
         """
-        if self.mtype == 'MCFOST':
-            from csalt.data_mcfost import fitdata
-        data = fitdata(self.datafile, vra=self.vra_fit, nu_rest=self.nu_rest, chbin=3)
-        p0 = [theta]
-        data = build_cache(p0, data, self.fixed, code=self.mtype, mode=self.mode)
 
-        model_vis = get_model_vis(theta, data, self.fixed, code_=self.mtype, mpi=self.mpi)
+        global fdata
+        global kw
+        fdata = copy.deepcopy(data)
+        kw = copy.deepcopy(self.fixed_kw)
 
-        run_emcee(self.datafile, self.fixed, code=self.mtype, vra=self.vra_fit,
-                  vcensor=self.vcensor, nwalk=self.nwalk, ninits=self.ninits,
-                  nsteps=self.nsteps, outfile=self.post_dir+self.postfile,
-                  mode=self.mode, nthreads=self.nthreads, append=self.append,
-                  mpi=self.mpi, model_vis=model_vis)
+        # Populate keywords from kwargs dictionary
+        if 'restfreq' not in kw:
+            kw['restfreq'] = self.nu_rest
+        if 'FOV' not in kw:
+            kw['FOV'] = 5.0
+        if 'Npix' not in kw:
+            kw['Npix'] = 256
+        if 'dist' not in kw:
+            kw['dist'] = 150.
+        if 'chpad' not in kw:
+            kw['chpad'] = 2
+        if 'Nup' not in kw:
+            kw['Nup'] = None
+        if 'noise_inject' not in kw:
+            kw['noise_inject'] = None
+        if 'doppcorr' not in kw:
+            kw['doppcorr'] = 'approx'
+        if 'SRF' not in kw:
+            kw['SRF'] = 'ALMA'
+
+        self.values = []
+
+        if self.param == 'PA':
+            for i in range(360):
+                self.values.append([i])
+        elif self.param == 'stellar_mass':
+            for i in range(100):
+                self.values.append([0.2+i/250])
+        elif self.param == 'vturb':
+            for i in range(100):
+                self.values.append([i/500])
+        elif self.param == 'dust_param':
+            for i in range(100):
+                self.values.append([10**(i/50)])
+        else:
+            print("Caitlyn you haven't set that one up yet")
+            return
+        
+        
+        os.environ["OMP_NUM_THREADS"] = "1"
+        with multiprocessing.Pool(processes=self.nthreads) as pool:
+            ln_posteriors = pool.starmap(self.cm.log_likelihood, [(value, fdata, kw, None, self.param) for value in self.values])
+
+        plt.figure()
+        plt.plot(self.values, ln_posteriors)
+        plt.title('Log posterior as a function of ' + self.param)
+        plt.xlabel(self.param)
+        plt.ylabel('Log posterior')
+        plt.savefig(self.param+'lnposterior.pdf')
+
+
+    
+
+    # def plot_visibilities(self, data, theta, mcube=None):
+    #     """
+    #     Plots the difference between the model visibilities and data visibilities
+    #     by EB for given polarisation and channel
+    #     Need to run initialise function first
+    #     """
+    #     plot(data, self.fixed, self.mtype, theta, mcube)
+
+    # def model_to_model(self, theta):
+    #     """
+    #     Runs a model to model fit so we can verify that the method is working
+    #     """
+    #     if self.mtype == 'MCFOST':
+    #         from csalt.data_mcfost import fitdata
+    #     data = fitdata(self.datafile, vra=self.vra_fit, nu_rest=self.nu_rest, chbin=3)
+    #     p0 = [theta]
+    #     data = build_cache(p0, data, self.fixed, code=self.mtype, mode=self.mode)
+
+    #     model_vis = get_model_vis(theta, data, self.fixed, code_=self.mtype, mpi=self.mpi)
+
+    #     run_emcee(self.datafile, self.fixed, code=self.mtype, vra=self.vra_fit,
+    #               vcensor=self.vcensor, nwalk=self.nwalk, ninits=self.ninits,
+    #               nsteps=self.nsteps, outfile=self.post_dir+self.postfile,
+    #               mode=self.mode, nthreads=self.nthreads, append=self.append,
+    #               mpi=self.mpi, model_vis=model_vis)

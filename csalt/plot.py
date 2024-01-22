@@ -1,5 +1,5 @@
 import matplotlib.pyplot as plt
-from csalt.models import * 
+from csalt.model import * 
 
 def plot(data_, fixed_, code_, theta, mcube=None):
     # loop through observations
