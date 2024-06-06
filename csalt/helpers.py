@@ -129,14 +129,16 @@ def write_MS(data_dict, outfile='out.ms', resid=False, direct_file=False):
 
         # pull the data array
         d = ms.getdata(['data'])
-        model, cube = data_dict[str(EB)]
+        model, cube, im_lnl = data_dict[str(EB)]
 
         # replace with the model array or the residuals
         if resid:
             d['data'] -= model.vis
         else:
             d['data'] = model.vis
+        print('writing' + outfile + ' to file')
         ms.putdata(d)
+        print('done')
 
         # close the MS file
         ms.close()

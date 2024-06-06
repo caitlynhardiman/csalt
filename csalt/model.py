@@ -16,6 +16,7 @@ from scipy import stats
 from vis_sample import vis_sample
 from vis_sample.classes import SkyImage
 from multiprocess.pool import Pool
+from math import isnan
 
 
 """
@@ -82,18 +83,24 @@ class model:
             self.path = ''
         self.prescription = prescription
         self.param = None
+        self.image_plane_fit = None
 
 
     """ 
         Generate a cube 
     """
     def cube(self, velax, pars, 
-             restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, cfg_dict={}, vsyst=None):
+             restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, cfg_dict={}, vsyst=None, directory=None):
 
         # Parse inputs
         if isinstance(velax, list): 
             velax = np.array(velax)
-        fixed = restfreq, FOV, Npix, dist, cfg_dict, vsyst
+        
+        if self.prescription=='MCFOST':
+            fixed = restfreq, FOV, Npix, dist, cfg_dict, vsyst, directory
+        else:
+            fixed = restfreq, FOV, Npix, dist, cfg_dict
+
 
         # Load the appropriate prescription
         pfile = 'parametric_disk_'+self.prescription
@@ -103,7 +110,7 @@ class model:
         pd = importlib.import_module(pfile)
 
         # Calculate the emission cube
-        return pd.parametric_disk(velax, pars, fixed)
+        return pd.parametric_disk(velax, pars, fixed, self.image_plane_fit)
 
 
     """ 
@@ -174,6 +181,8 @@ class model:
             kw['cfg_dict'] = {}
         if 'vsyst' not in kw:
             kw['vsyst'] = None
+        if 'directory' not in kw:
+            kw['directory'] = None
         if 'param' not in kw:
             kw['param'] = None
 
@@ -196,6 +205,7 @@ class model:
                                                SRF=kw['SRF'],
                                                cfg_dict=kw['cfg_dict'],
                                                vsyst=kw['vsyst'],
+                                               directory=kw['directory'],
                                                param=kw['param'])
             return m_
         else:
@@ -213,6 +223,7 @@ class model:
                                                 SRF=kw['SRF'],
                                                 cfg_dict=kw['cfg_dict'],
                                                 vsyst=kw['vsyst'],
+                                                directory=kw['directory'],
                                                 param=kw['param'])
             return p_, n_
 
@@ -223,7 +234,7 @@ class model:
                  restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, chpad=2, 
                  Nup=None, noise_inject=None, doppcorr='approx', SRF='ALMA',
                  gcf_holder=None, corr_cache=None, return_holders=False,
-                 cfg_dict={}, vsyst=None, icube=None, param=None):
+                 cfg_dict={}, vsyst=None, directory=None, icube=None, param=None):
 
         """ Prepare the spectral grids: format = [timestamps, channels] """
         # Pad the LSRK frequencies
@@ -251,7 +262,9 @@ class model:
         ### - Compute the model visibilities
         mvis_ = np.squeeze(np.empty((dset.npol, nch, dset.nvis, 2)))
 
-        if self.prescription == 'MCFOST':
+        exclude = ['MCFOST', 'FITS', 'MYFITS']
+
+        if self.prescription in exclude:
             mu_RA = 0
             mu_DEC = 0
         else:
@@ -265,6 +278,8 @@ class model:
                 param_dict_form[param[i]] = pars[i]
             pars = param_dict_form
 
+        image_lnl = None
+
         # *Exact* Doppler correction calculation
         if doppcorr == 'exact':
             for itime in range(dset.nstamps):
@@ -275,7 +290,11 @@ class model:
                 if icube is None:
                     icube = self.cube(vel[itime,:], pars, restfreq=restfreq,
                                       FOV=FOV, Npix=Npix, dist=dist, 
-                                      cfg_dict=cfg_dict, vsyst=vsyst)
+                                      cfg_dict=cfg_dict, vsyst=vsyst,
+                                      directory=directory)
+                    if isinstance(icube, dict):
+                        image_lnl = icube['image_lnl']
+                        icube = icube['cube']
 
                 # visibility indices for this timestamp only
                 ixl = np.min(np.where(dset.tstamp == itime))
@@ -302,7 +321,10 @@ class model:
             if icube is None:
                 icube = self.cube(v_model, pars, restfreq=restfreq,
                                   FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict,
-                                  vsyst=vsyst)
+                                  vsyst=vsyst, directory=directory)
+                if isinstance(icube, dict):
+                    image_lnl = icube['image_lnl']
+                    icube = icube['cube']
 
             # sample the FFT on the (u, v) spacings
             if return_holders:
@@ -312,7 +334,8 @@ class model:
                                              return_gcf=True, 
                                              return_corr_cache=True,
                                              mod_interp=False)
-                return mvis.T, gcf, corr, icube
+
+                return mvis.T, gcf, corr, icube, image_lnl
             else:
                 mvis = vis_sample(imagefile=icube, uu=dset.ulam, vv=dset.vlam, 
                                   gcf_holder=gcf_holder, corr_cache=corr_cache,
@@ -335,8 +358,12 @@ class model:
             # make a cube
             if icube is None:
                 icube = self.cube(vel[0,:], pars, restfreq=restfreq,
-                              FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict,
-                              vsyst=vsyst)
+                              FOV=FOV, Npix=Npix, 
+                              dist=dist, cfg_dict=cfg_dict,
+                              vsyst=vsyst, directory=directory)
+                if isinstance(icube, dict):
+                    image_lnl = icube['image_lnl']
+                    icube = icube['cube']
 
             # sample the FFT on the (u, v) spacings
             if return_holders:
@@ -346,7 +373,7 @@ class model:
                                              return_gcf=True,
                                              return_corr_cache=True,
                                              mod_interp=False)
-                return mvis.T, gcf, corr, icube
+                return mvis.T, gcf, corr, icube, image_lnl
             else:
                 mvis = vis_sample(imagefile=icube, uu=dset.ulam, vv=dset.vlam,
                                   gcf_holder=gcf_holder, corr_cache=corr_cache,
@@ -373,7 +400,7 @@ class model:
 
         # Return the pure or pure and noisy models
         if noise_inject is None:
-            return mset_p, icube
+            return mset_p, icube, image_lnl
         else:
             # Calculate noise spectra
             noise = self.calc_noise(noise_inject, dset, 
@@ -392,8 +419,8 @@ class model:
             mvis_n = mvis_noisy[:,:,:,0] + 1j * mvis_noisy[:,:,:,1]
             mset_n = dataset(dset.um, dset.vm, mvis_n, dset.wgt, dset.nu_TOPO,
                              dset.nu_LSRK, dset.tstamp)
-    
-            return mset_p, mset_n, icube
+            
+            return (mset_p, icube, image_lnl), (mset_n, icube, image_lnl)
 
 
     """
@@ -729,6 +756,7 @@ class model:
                 # Pre-calculate the log-likelihood normalization term
                 print('Log likelihood normalisation time!')
                 dterm = np.empty((data.npol, data.nvis))
+                print('total: ', data.nvis)
                 _wgt = bwgt if binned else iwgt
                 # for ii in range(data.nvis):
                 #     print(ii, '/', range(data.nvis))
@@ -827,6 +855,8 @@ class model:
 
         if min_nchan % 2 == 0:
             min_nchan +=1
+
+        print(min_nchan)
         
         return min_nchan
 
@@ -882,6 +912,8 @@ class model:
 
         # Acquire and store the GCF and CORR caches for iterative sampling
         print('Caching...')
+        if 'vsyst' not in kwargs:
+            kwargs['vsyst'] = None
         infdata = self.cache(p0, infdata, restfreq, kwargs)
 
         # Declare the data and kwargs as globals (for speed in pickling)
@@ -1000,7 +1032,7 @@ class model:
         for i in range(infdata['Nobs']):
             if self.prescription != 'MCFOST' or i==0:
                 icube = None
-            _, gcf, corr, icube = self.modelset(dset=infdata[str(i)], pars=p0[0], 
+            _, gcf, corr, icube, image_lnl = self.modelset(dset=infdata[str(i)], pars=p0[0], 
                                          restfreq=restfreq, 
                                          FOV=kwargs['FOV'],
                                          Npix=kwargs['Npix'], 
@@ -1027,10 +1059,13 @@ class model:
             return -np.inf, -np.inf
 
         # Compute log-likelihood
-        lnL = self.log_likelihood(theta, fdata=fdata, kwargs=kw, model_vis=model)
+        lnL, image_lnl = self.log_likelihood(theta, fdata=fdata, kwargs=kw, model_vis=model)
 
-        # return the log-posterior and the log-prior
-        return lnL + lnT, lnT
+        if image_lnl is None:
+            # return the log-posterior and the log-prior
+            return lnL + lnT, lnT
+        else:
+            return lnL + lnT, lnT, image_lnl
 
 
     """
@@ -1041,6 +1076,7 @@ class model:
         # Loop over observations to get likelihood
         logL = 0
         icube = None
+        print(fdata['Nobs'])
         for i in range(fdata['Nobs']):
 
             # Get the data 
@@ -1051,14 +1087,14 @@ class model:
                 icube = None
 
             # Calculate the model
-            _mdl, icube = self.modelset(_data, theta, restfreq=kwargs['restfreq'],
+            _mdl, icube, image_lnl = self.modelset(_data, theta, restfreq=kwargs['restfreq'],
                                  FOV=kwargs['FOV'], Npix=kwargs['Npix'], 
                                  dist=kwargs['dist'], chpad=kwargs['chpad'],
                                  doppcorr=kwargs['doppcorr'], 
                                  SRF=kwargs['SRF'], 
                                  gcf_holder=fdata['gcf_'+str(i)],
                                  corr_cache=fdata['corr_'+str(i)], 
-                                 vsyst=kwargs['vsyst'], icube=icube, param=self.param)
+                                 vsyst=kwargs['vsyst'], directory=kwargs['directory'], icube=icube, param=self.param)
 
             # Spectrally bin the model visibilities if necessary
             # **technically wrong, since the weights are copied like this; 
@@ -1078,17 +1114,26 @@ class model:
                 resid = np.hstack(np.absolute(model_vis[str(i)] - mvis))
             var = np.hstack(_data.wgt)
 
+            #unweighted = np.ones(var.shape)
+            #var = unweighted
+
+
             # Compute the log-likelihood (** still needs constant term)
             Cinv = fdata['invcov_'+str(i)]
+            print(Cinv.shape)
+            Cinv = np.identity(Cinv.shape[0])
             # Cinv = np.eye(len(Cinv))
             logL += -0.5 * np.tensordot(resid, np.dot(Cinv, var * resid))
 
-        return logL
+        if isnan(logL):
+            print(theta)
+
+        return logL, image_lnl
     
 
     def brute_force(self, msfile, vra=None, vcensor=None, kwargs=None,
                           restfreq=230.538e9, chbin=1, well_cond=300,
-                          Nthreads=6, param=None, directory='.'):
+                          Nthreads=6, param=None, directory='.', image_plane=False):
         """
         Brute force search by parameter for the best fit
         """
@@ -1103,6 +1148,13 @@ class model:
             self.priors_prescription = self.prescription
             for parameter in self.param:
                 self.priors_prescription += '_'+parameter
+        
+        if image_plane:
+            print('Initialising image plane comparison cube')
+            from myfittingpackage import image_plane_fit as ipf 
+            image = ipf(datacube='/home/chardima/runs/DM_Tau_12CO_beam0.15_28ms_3sigma.clean.image.fits', 
+                        distance=144.5, vismode=True, vel_range=vra, npix=512)
+            self.image_plane_fit = image 
         
         from multiprocessing import Pool
         if Nthreads > 1:
@@ -1180,12 +1232,18 @@ class model:
 
         ln_posteriors = []
         ln_priors = []
-        for pair in posteriors_priors:
-            ln_posteriors.append(pair[0])
-            ln_priors.append(pair[1])
+        im_lnl = []
+        for result in posteriors_priors:
+            ln_posteriors.append(result[0])
+            ln_priors.append(result[1])
+            if image_plane:
+                im_lnl.append(result[2])
 
-        outfile = directory+'/'+param[0]+param[1]+'.npz'
-        np.savez(outfile, values, ln_posteriors, ln_priors)
+        if len(param) == 1:
+            outfile = directory+'/'+param[0]+'.npz'
+        else:
+            outfile = directory+'/'+param[0]+param[1]+'.npz'
+        np.savez(outfile, values, ln_posteriors, ln_priors, im_lnl)
 
         import matplotlib
         matplotlib.use('Agg')
@@ -1194,10 +1252,10 @@ class model:
         if len(param) == 1:
             plt.figure()
             plt.plot(values, ln_posteriors)
-            plt.title('Log posterior as a function of ' + param)
-            plt.xlabel(param)
+            plt.title('Log posterior as a function of ' + param[0])
+            plt.xlabel(param[0])
             plt.ylabel('Log posterior')
-            plt.savefig(directory+'/'+param+'lnposterior.pdf')
+            plt.savefig(directory+'/'+param[0]+'lnposterior.pdf')
         else:
             plt.figure()
             x, y = zip(*values)
@@ -1210,39 +1268,159 @@ class model:
                    lnp.append(ln_posteriors[j*len(y)+i]) 
                 posteriors.append(lnp)
             plt.pcolormesh(x, y, posteriors)
-            plt.title('Log posterior as a function of ' + param[0] + ' and ' + param[1])
+            plt.title('Visibility log posterior as a function of ' + param[0] + ' and ' + param[1])
             plt.xlabel(param[0])
             plt.ylabel(param[1])
             plt.colorbar()
-            plt.savefig(directory+'/'+param[0]+'_'+param[1]+'_'+'lnposterior.pdf')
-            plt.show()
+            plt.savefig(directory+'/'+param[0]+'_'+param[1]+'_'+'lnposterior_vis.pdf')
+            plt.clf()
+
+            if image_plane:
+
+                plt.figure()
+                posteriors = []
+                for i in range(len(y)):
+                    lnp = []
+                    for j in range(len(x)):
+                        lnp.append(im_lnl[j*len(y)+i]) 
+                    posteriors.append(lnp)
+                plt.pcolormesh(x, y, posteriors)
+                plt.title('Image plane log posterior as a function of ' + param[0] + ' and ' + param[1])
+                plt.xlabel(param[0])
+                plt.ylabel(param[1])
+                plt.colorbar()
+                plt.savefig(directory+'/'+param[0]+'_'+param[1]+'_'+'lnposterior_imageplane.pdf')
 
 
 
     def param_ranges(self, param):
         values = []
-        if param == 'PA':
-            for i in range(360):
-                values.append([i])
+        if param == 'inclination':
+            for i in range(20):
+                values.append([24+i])
         elif param == 'stellar_mass':
-            for i in range(50):
-                values.append([0.2+i/125])
-        elif param == 'vturb':
-            for i in range(50):
-                values.append([i/250])
-        elif param == 'dust_param':
-            for i in range(100):
-                values.append([10**(i/50)])
+            for i in range(20):
+                values.append([0.2 + 0.04*i])
+        elif param == 'scale_height':
+            for i in range(20):
+                values.append([10 + i])
+        elif param == 'r_c':
+            for i in range(40):
+                values.append([200 + 5*i])
         elif param == 'flaring_exp':
-            for i in range(100):
-                values.append([1+i/100])
+            for i in range(20):
+                values.append([1 + 0.05*i])
+        elif param == 'PA':
+            for i in range(20):
+                values.append([145+i])
+        elif param == 'dust_param':
+            for i in range(20):
+                values.append([10**(-5 + i/10)])
+        elif param == 'vturb':
+            for i in range(20):
+                values.append([0.01*i])
+        elif param == 'gas_mass':
+            for i in range(20):
+                values.append([10**(-2 + 0.05*i)])
+        elif param == 'gasdust_ratio':
+            for i in range(20):
+                values.append([10**(1+0.1*i)])
         else:
             print("Caitlyn you haven't set that one up yet")
             return
         
         return values
+    
+    """
+        Sample the posteriors.
+    """
+    def initial_guess(self, msfile, theta, vra=None, vcensor=None, kwargs=None,
+                          restfreq=230.538e9, chbin=1, well_cond=300,
+                          Nwalk=75, Ninits=20, Nsteps=1000, 
+                          outpost='stdout.h5', Nthreads=6, param=None):
+
+        from multiprocessing import Pool
+        import emcee
+        # if Nthreads > 1:
+        #     os.environ["OMP_NUM_THREADS"] = "1"
+
+        # Parse the data into proper format
+        print('Fitting data')
+        infdata = self.fitdata(msfile, vra=vra, vcensor=vcensor, 
+                               restfreq=restfreq, chbin=chbin, 
+                               well_cond=well_cond)
+        
+        if param is not None:
+            self.param = param
+            self.priors_prescription = self.prescription
+            for parameter in self.param:
+                self.priors_prescription += '_'+parameter
+        else:
+            self.priors_prescription = self.prescription
+
+        # Initialize the parameters using an initial good estimate
+        print('Initialising priors')
+        priors = importlib.import_module('priors_'+self.priors_prescription)
+        Ndim = len(priors.pri_pars)
+        p0 = theta + 1e-2 * np.random.randn(Nwalk, Ndim)
+
+        # Acquire and store the GCF and CORR caches for iterative sampling
+        print('Caching...')
+        if 'vsyst' not in kwargs:
+            kwargs['vsyst'] = None
+        infdata = self.cache(p0, infdata, restfreq, kwargs)
+
+        # Declare the data and kwargs as globals (for speed in pickling)
+        global fdata
+        global kw
+        fdata = copy.deepcopy(infdata)
+        kw = copy.deepcopy(kwargs)
+
+        # Populate keywords from kwargs dictionary
+        if 'restfreq' not in kw:
+            kw['restfreq'] = restfreq
+        if 'FOV' not in kw:
+            kw['FOV'] = 5.0
+        if 'Npix' not in kw:
+            kw['Npix'] = 256
+        if 'dist' not in kw:
+            kw['dist'] = 150.
+        if 'chpad' not in kw:
+            kw['chpad'] = 2
+        if 'Nup' not in kw:
+            kw['Nup'] = None
+        if 'noise_inject' not in kw:
+            kw['noise_inject'] = None
+        if 'doppcorr' not in kw:
+            kw['doppcorr'] = 'approx'
+        if 'SRF' not in kw:
+            kw['SRF'] = 'ALMA'
+        if 'vsyst' not in kw:
+            kw['vsyst'] = None
+
+        # Initialize the MCMC walkers
+        backend = emcee.backends.HDFBackend(outpost)
+        backend.reset(Nwalk, Ndim)
+
+        # Sample the posterior distribution
+        print('Full MCMC with good guess initialisation')
+        with Pool(processes=Nthreads) as pool:
+            samp = emcee.EnsembleSampler(Nwalk, Ndim, self.log_posterior,
+                                            pool=pool, backend=backend)
+            t0 = time.time()
+            samp.run_mcmc(p0, Nsteps, progress=True)
+        t1 = time.time()
+        print('backend run in ', t1-t0)
+        print('\n\n    This run took %.2f hours' % ((t1 - t0) / 3600))
+
+        # Release the globals
+        del fdata
+        del kw
+
+        return samp
 
 def determinant(args):
     ii, jj = args
+    print(ii)
     sgn, lndet = np.linalg.slogdet(scov/_wgt[jj,:,ii])
     return (jj, ii, sgn*lndet)

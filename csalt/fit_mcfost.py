@@ -7,6 +7,8 @@ from csalt.model import *
 from csalt.helpers import *
 import multiprocessing
 from functools import partial
+import pymcfost as mcfost
+import casa_cube as casa
 
 # Class definition
 class setup_fit():
@@ -27,6 +29,9 @@ class setup_fit():
                  FOV=6.375,
                  Npix=256,
                  dist=144.5,
+                 image_plane=False,
+                 data_cube=None, 
+                 casa_sim=False,
                  cfg_dict={}):
         
         if msfile is None:
@@ -71,12 +76,19 @@ class setup_fit():
         self.cm.param = self.param
 
         # Define some fixed attributes for the modeling
-        self.fixed_kw = {'FOV': self.FOV, 'Npix': self.Npix, 'dist': self.dist, 'vsyst': self.vsyst} 
+        self.fixed_kw = {'FOV': self.FOV, 'Npix': self.Npix, 'dist': self.dist, 'vsyst': self.vsyst,
+                         'directory': None} 
 
         # Import priors
         print('Initialising priors')
         self.priors = importlib.import_module('priors_'+self.priors_prescription)
-        self.Ndim = len(self.priors.pri_pars)             
+        self.Ndim = len(self.priors.pri_pars)
+
+        if image_plane:
+            print('Initialising image plane comparison cube')
+            from myfittingpackage import image_plane_fit as ipf 
+            image = ipf(datacube=data_cube, distance=144.5, vismode=True, vel_range=vra_fit, npix=512, casa_sim=casa_sim)
+            self.cm.image_plane_fit = image           
 
 
     def mcmc_fit(self):
@@ -144,7 +156,7 @@ class setup_fit():
         return loglikelihood+lnT
     
 
-    def brute_force(self, data):
+    def brute_force(self, data, datacube, single=False):
 
         """
         Needs to be called after initialise
@@ -154,6 +166,11 @@ class setup_fit():
         global kw
         fdata = copy.deepcopy(data)
         kw = copy.deepcopy(self.fixed_kw)
+
+        if len(self.param) > 2:
+            print('Only maximum of two parameters to brute force over!')
+            return
+        
 
         # Populate keywords from kwargs dictionary
         if 'restfreq' not in kw:
@@ -175,36 +192,174 @@ class setup_fit():
         if 'SRF' not in kw:
             kw['SRF'] = 'ALMA'
 
-        self.values = []
+        self.values = None
+        self.datacube = datacube
 
-        if self.param == 'PA':
-            for i in range(360):
-                self.values.append([i])
-        elif self.param == 'stellar_mass':
-            for i in range(100):
-                self.values.append([0.2+i/250])
-        elif self.param == 'vturb':
-            for i in range(100):
-                self.values.append([i/500])
-        elif self.param == 'dust_param':
-            for i in range(100):
-                self.values.append([10**(i/50)])
-        else:
-            print("Caitlyn you haven't set that one up yet")
-            return
+        for param in self.param:
+            values = []
+            if param == 'inclination':
+                for i in range(180):
+                    values.append([i])
+            elif param == 'stellar_mass':
+                for i in range(19):
+                    values.append([0.05 + 0.05*i])
+            elif param == 'scale_height':
+                for i in range(20):
+                    values.append([10 + i])
+            elif param == 'r_c':
+                for i in range(40):
+                    values.append([200 + 5*i])
+            elif param == 'flaring_exp':
+                for i in range(20):
+                    values.append([1 + 0.05*i])
+            elif param == 'PA':
+                for i in range(60):
+                    values.append([6*i])
+            elif param == 'dust_param':
+                for i in range(20):
+                    values.append([10**(-5 + i/10)])
+            elif param == 'vturb':
+                for i in range(20):
+                    values.append([0.01*i])
+            elif param == 'gas_mass':
+                for i in range(20):
+                    values.append([10**(-2 + 0.05*i)])
+            elif param == 'gasdust_ratio':
+                for i in range(20):
+                    values.append([10**(1+0.1*i)])
+            else:
+                print("Not a valid parameter")
+                return
+
+            if self.values is None:
+                self.values = values
+            else:
+                full_values = []
+                for value in self.values:
+                    for second_value in values:
+                        full_values.append([value[0], second_value[0]])
+                self.values = full_values
         
         
         os.environ["OMP_NUM_THREADS"] = "1"
-        with multiprocessing.Pool(processes=self.nthreads) as pool:
-            ln_posteriors = pool.starmap(self.cm.log_likelihood, [(value, fdata, kw, None, self.param) for value in self.values])
 
-        plt.figure()
-        plt.plot(self.values, ln_posteriors)
-        plt.title('Log posterior as a function of ' + self.param)
-        plt.xlabel(self.param)
-        plt.ylabel('Log posterior')
-        plt.savefig(self.param+'lnposterior.pdf')
+        if single:
+            likelihoods = []
+            for value in self.values:
+                likelihoods.append(self.cm.log_likelihood(value, fdata, kw, None))
+        
+        else:
+            with multiprocessing.Pool(processes=self.nthreads) as pool:
+                likelihoods = pool.starmap(self.cm.log_likelihood, [(value, fdata, kw, None) for value in self.values])
 
+        print(likelihoods)
+
+        priors = importlib.import_module('priors_'+self.priors_prescription)
+        ln_posteriors = []
+        image_plane_likelihoods = []
+        for i in range(len(likelihoods)):
+            lnT = np.sum(priors.logprior(self.values[i])) * fdata['Nobs']
+            ln_posteriors.append(likelihoods[i][0] + lnT)
+            image_plane_likelihoods.append(likelihoods[i][1])
+
+        name = ''
+        for param in self.param:
+            name += param
+        stored_results = name + '_results.npz'
+        np.savez(stored_results, self.values, ln_posteriors, image_plane_likelihoods)
+
+        #self.movie_plot(self.values, ln_posteriors)
+
+        # plt.figure()
+        # plt.plot(self.values, ln_posteriors)
+        # plt.title('Log posterior as a function of ' + self.param)
+        # plt.xlabel(self.param)
+        # plt.ylabel('Log posterior')
+        # plt.savefig(self.param+'lnposterior.pdf')
+
+        return ln_posteriors
+    
+    def movie_plot(self, vals, posteriors):
+
+        for i in range(len(vals)):
+            val = vals[i]
+            fig = plt.figure(figsize=(30,6))
+            subfigs = fig.subfigures(1, 2, wspace=0.05, width_ratios=[1,2])
+            axsLeft = subfigs[0].subplots(1, 1)
+            axsLeft.plot(vals, posteriors)
+            axsLeft.scatter([val], [posteriors[i]])
+            axsLeft.title('Log posterior as a function of ' + self.param)
+            axsLeft.xlabel(self.param)
+            axsLeft.ylabel('Log posterior')
+            
+
+            if isinstance(self.datacube, str):
+                print("Reading cube...")
+                cube = casa.Cube(self.datacube, zoom=0.25)
+                beam_area = cube.bmin * cube.bmaj * np.pi / (4.0 * np.log(2.0))
+                pix_area = cube.pixelscale**2
+            else:
+                print('Need to give a cube to cube to compare with!')
+                return 0
+            
+            #jobfs = os.getenv("JOBFS")
+            directory = str(vals[i])+'_'+self.param
+            model = mcfost.Line(directory+'/data_CO')
+            residuals = mcfost.Line(directory+'/data_CO')
+
+            velocities = model.velocity
+
+            exocubelines = cube.image * pix_area/beam_area
+            exocubelines[np.isnan(exocubelines)] = 0
+            model_chans = []
+            exocube_chans = []
+
+            for vel in velocities:
+                iv = np.abs(cube.velocity - vel).argmin()
+                exocube_chans.append(exocubelines[iv])
+
+            for vel in velocities:
+                iv = np.abs(model.velocity - vel).argmin()
+                model_chans.append(model.lines[iv])
+
+            model_chans = np.array(model_chans)
+            exocube_chans = np.array(exocube_chans)
+            residuals.lines = exocube_chans - model_chans
+
+            # Plotting arguments
+            fmax = 0.05
+            cmap = 'Blues'
+            fmin = 0
+            colorbar = False
+            vlabel_color = 'black'
+            lim = 6.99
+            limits = [lim, -lim, -lim, lim]
+            no_ylabel = False
+            axsRight = subfigs[1].subplots(3, 9, sharex='all', sharey='all')
+            axsRight.subplots_adjust(wspace=0.0, hspace=0.0)
+            for i in range(9):
+                if i != 0:
+                    no_ylabel = True
+                if i == 8:
+                    colorbar = True
+                if i != 4:
+                    no_xlabel = True
+                else:
+                    no_xlabel = False
+                #cube.plot(ax=axs[0, i], v=velocities[i], fmin=fmin, fmax=fmax, cmap=cmap, colorbar=colorbar, vlabel_color=vlabel_color, limits=limits, no_xlabel=True, no_ylabel=True)
+                #axs[0, i].get_xaxis().set_visible(False)
+                #model.plot_map(ax=axs[1, i], v=velocities[i],  bmaj=cube.bmaj, bmin=cube.bmin, bpa=cube.bpa, fmin=fmin, fmax=fmax, cmap=cmap, colorbar=colorbar, per_beam=True, limits=limits, no_xlabel=no_xlabel, no_ylabel=no_ylabel)
+
+                cube.plot(ax=axsRight[0, i], v=velocities[i], fmin=fmin, fmax=fmax, cmap=cmap, colorbar=colorbar, no_vlabel=False, vlabel_color='black', limits=limits, no_xlabel=True, no_ylabel=True)
+                axsRight[0, i].get_xaxis().set_visible(False)
+                print('Per beam')
+                model.plot_map(ax=axsRight[1, i], v=velocities[i],  bmaj=cube.bmaj, bmin=cube.bmin, bpa=cube.bpa, fmin=fmin, fmax=fmax, cmap=cmap, colorbar=colorbar, per_beam=True, limits=limits, no_xlabel=True, no_ylabel=no_ylabel, no_vlabel=False, no_xticks=True)
+                residuals.plot_map(ax=axsRight[2, i], v=velocities[i],  bmaj=cube.bmaj, bmin=cube.bmin, bpa=cube.bpa, fmin=-fmax, fmax=fmax, cmap='RdBu', colorbar=colorbar, per_beam=True, limits=limits, no_ylabel=True, no_vlabel=False, no_xlabel=no_xlabel)            
+            
+            
+            plt.savefig(str(val)+'_'+self.param+'.pdf')
+
+            return
 
     
 
