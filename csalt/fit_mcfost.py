@@ -16,10 +16,8 @@ class setup_fit():
     def __init__(self,
                  msfile=None,
                  append: bool = False,
-                 mpi: bool = False,
                  param=None,
                  vra_fit=[4.06e3, 8.06e3],
-                 vsyst=None,
                  vcensor=None,
                  nwalk=128,
                  ninits=300,
@@ -57,9 +55,6 @@ class setup_fit():
         self.Npix = Npix
         self.dist = dist
         self.cfg_dict = cfg_dict
-        self.mpi = mpi
-        self.param = None
-        self.vsyst = vsyst
 
         if param is not None:
             print('Using param!')
@@ -73,11 +68,11 @@ class setup_fit():
         # Instantiate a csalt model
         print('Making model')
         self.cm = model(self.mtype)
-        self.cm.param = self.param
+        if param is not None:
+            self.cm.param = self.param
 
         # Define some fixed attributes for the modeling
-        self.fixed_kw = {'FOV': self.FOV, 'Npix': self.Npix, 'dist': self.dist, 'vsyst': self.vsyst,
-                         'directory': None} 
+        self.fixed_kw = {'restfreq': nu_rest, 'FOV': FOV, 'Npix': Npix, 'dist': dist, 'cfg_dict': cfg_dict} 
 
         # Import priors
         print('Initialising priors')
@@ -147,7 +142,7 @@ class setup_fit():
             kw['SRF'] = 'ALMA'
 
 
-        loglikelihood = self.cm.log_likelihood(theta, fdata=fdata, kwargs=kw)
+        loglikelihood, im_lnl = self.cm.log_likelihood(theta, fdata=fdata, kwargs=kw)
 
         priors = importlib.import_module('priors_'+self.priors_prescription)
         lnT = np.sum(priors.logprior(theta)) * fdata['Nobs']
@@ -198,23 +193,23 @@ class setup_fit():
         for param in self.param:
             values = []
             if param == 'inclination':
-                for i in range(180):
-                    values.append([i])
+                for i in range(30):
+                    values.append([6*i])
             elif param == 'stellar_mass':
                 for i in range(19):
-                    values.append([0.05 + 0.05*i])
+                    values.append([0.2 + 0.1*i])
             elif param == 'scale_height':
                 for i in range(20):
                     values.append([10 + i])
             elif param == 'r_c':
-                for i in range(40):
-                    values.append([200 + 5*i])
+                for i in range(20):
+                    values.append([200 + 10*i])
             elif param == 'flaring_exp':
                 for i in range(20):
                     values.append([1 + 0.05*i])
             elif param == 'PA':
-                for i in range(60):
-                    values.append([6*i])
+                for i in range(20):
+                    values.append([18*i])
             elif param == 'dust_param':
                 for i in range(20):
                     values.append([10**(-5 + i/10)])
@@ -360,31 +355,5 @@ class setup_fit():
             plt.savefig(str(val)+'_'+self.param+'.pdf')
 
             return
-
+        
     
-
-    # def plot_visibilities(self, data, theta, mcube=None):
-    #     """
-    #     Plots the difference between the model visibilities and data visibilities
-    #     by EB for given polarisation and channel
-    #     Need to run initialise function first
-    #     """
-    #     plot(data, self.fixed, self.mtype, theta, mcube)
-
-    # def model_to_model(self, theta):
-    #     """
-    #     Runs a model to model fit so we can verify that the method is working
-    #     """
-    #     if self.mtype == 'MCFOST':
-    #         from csalt.data_mcfost import fitdata
-    #     data = fitdata(self.datafile, vra=self.vra_fit, nu_rest=self.nu_rest, chbin=3)
-    #     p0 = [theta]
-    #     data = build_cache(p0, data, self.fixed, code=self.mtype, mode=self.mode)
-
-    #     model_vis = get_model_vis(theta, data, self.fixed, code_=self.mtype, mpi=self.mpi)
-
-    #     run_emcee(self.datafile, self.fixed, code=self.mtype, vra=self.vra_fit,
-    #               vcensor=self.vcensor, nwalk=self.nwalk, ninits=self.ninits,
-    #               nsteps=self.nsteps, outfile=self.post_dir+self.postfile,
-    #               mode=self.mode, nthreads=self.nthreads, append=self.append,
-    #               mpi=self.mpi, model_vis=model_vis)

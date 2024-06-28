@@ -3,6 +3,7 @@ import sys
 import warnings
 import importlib
 import datetime
+import time
 import numpy as np
 import scipy.constants as sc
 from astropy.io import fits, ascii
@@ -122,7 +123,6 @@ def write_MS(data_dict, outfile='out.ms', resid=False, direct_file=False):
     # Loop over the observations to pack into the MS file
     ms = casatools.ms()
     for EB in range(data_dict['Nobs']):
-        print(EB)
         # open the MS file for this EB
         ms.open(outfile, nomodify=False)
         ms.selectinit(datadescid=EB)
@@ -136,9 +136,11 @@ def write_MS(data_dict, outfile='out.ms', resid=False, direct_file=False):
             d['data'] -= model.vis
         else:
             d['data'] = model.vis
-        print('writing' + outfile + ' to file')
+        print('writing ' + outfile + ' to file')
+        t0 = time.time()
         ms.putdata(d)
-        print('done')
+        t1 = time.time()
+        print('done in ', str((t1-t0)/60))
 
         # close the MS file
         ms.close()

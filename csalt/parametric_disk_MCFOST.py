@@ -9,10 +9,23 @@ import multiprocess
 
 def parametric_disk(velax, pars, pars_fixed, mpi=False):
 
-    restfreq, FOV, npix, dist, cfg_dict, vsyst, directory = pars_fixed  # these need to come in somewhere, right now they are manually in the para file
-    
-    if isinstance(pars, dict):
-       model = write_run_mcfost(velax, mpi=mpi, vsyst=vsyst, storage=pars, **pars)
+    restfreq, FOV, npix, dist, cfg_dict = pars_fixed  # these need to come in somewhere, right now they are manually in the para file
+
+    # Unpacking options from cfg dict
+    ozstar = cfg_dict.get('ozstar')
+    vsyst = cfg_dict.get('vsyst')
+    directory = cfg_dict.get('directory')
+    param = cfg_dict.get('param')
+    image_plane_likelihood = cfg_dict.get('image_plane')
+    line_profile_likelihood = cfg_dict.get('line_profile')
+
+    if param is not None:
+    #param_dict_form = {param: pars[0]}
+        param_dict_form = {}
+        for i in range(len(param)):
+            param_dict_form[param[i]] = pars[i]
+        pars = param_dict_form
+        model = write_run_mcfost(velax, mpi=mpi, vsyst=vsyst, storage=pars, **pars)       
     else:
         inc, m, h, rc, psi, PA, dust_a, vturb, gas_mass, gasdust_ratio = pars
         model = write_run_mcfost(velax, inc, m, h, rc, psi, PA, dust_a, vturb, gas_mass, gasdust_ratio, vsyst, mpi)

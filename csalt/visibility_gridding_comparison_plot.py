@@ -16,6 +16,7 @@ from astropy.io import fits
 import scipy.constants as sc
 import cmasher as cmr
 
+import pymcfost as mcfost
 import casa_cube as casa
 
 
@@ -36,7 +37,9 @@ kepmask_kw = {'inc': 36.6, 'PA': 155, 'mstar': 0.4, 'dist': 144.5, 'vlsr': 6100,
 
 data = '/home/chardima/runs/FITTING_EXPERIMENTS/concatenated.ms'
 
-fixed_kwargs = {'FOV': 6.375, 'Npix': 256, 'dist': 144.5, 'restfreq':345.796e9, 'vsyst': 6.04}
+cfg_dict = {'vsyst': 6.04, 'ozstar': True}
+
+fixed_kwargs = {'FOV': 6.375, 'Npix': 256, 'dist': 144.5, 'restfreq':345.796e9, 'cfg_dict': cfg_dict}
 
 
 def image_data(data):
@@ -48,29 +51,32 @@ def image_data(data):
 
 
 
-def image_model(params, data, directory, fixed_kw, modeltype, dicts=False):
+def image_model(params, data, directory, fixed_kw, modeltype):
 
     val = ''
     for key, value in params.items():
         val += '_'+str(value)
 
-    if not dicts:
-        # Read in the data MS
-        ddict = read_MS(data)
-        # Instantiate a csalt model
-        cm = model(modeltype)
-        # Calculate a model dictionary; write it to model and residual MS files
-        print("Model Dictionary")
-        fixed_kw['directory'] = directory
-        mdict = cm.modeldict(ddict, params, kwargs=fixed_kw)
-        if directory is None:
-            directory = '.'
-        write_MS(mdict, outfile=directory+'/model/MODEL'+str(val)+'.ms')
-        write_MS(mdict, outfile=directory+'/residual/RESID'+str(val)+'.ms', resid=True)
-        print('Made dictionary!')
-
+    # Read in the data MS
+    ddict = read_MS(data)
+    # Instantiate a csalt model
+    cm = model(modeltype)
+    # Calculate a model dictionary; write it to model and residual MS files
+    print("Model Dictionary")
+    os.environ["OMP_NUM_THREADS"] = "1"
+    cfg_dict['directory'] = directory
+    fixed_kw['cfg_dict'] = cfg_dict
+    mdict = cm.modeldict(ddict, params, kwargs=fixed_kw)
+    if directory is None:
+        directory = '.'
     origin = os.getcwd()
     os.chdir(directory)
+    os.environ["OMP_NUM_THREADS"] = "8"
+    write_MS(mdict, outfile='model/MODEL'+str(val)+'.ms')
+    write_MS(mdict, outfile='residual/RESID'+str(val)+'.ms', resid=True)
+    print('Made dictionary!')
+
+
 
     # Image model, and residual cubes - move to individual directories
     imagecube('model/MODEL'+str(val)+'.ms', 'model/MODEL'+str(val), 
@@ -118,6 +124,9 @@ def make_plot(data, param, val, posterior, all_values, all_posteriors, fixed_kw)
     plot_name = construct_plot(param, cubes, val, posterior, all_values, all_posteriors)
 
     return
+ 
+
+
 
 def make_plot_five(vis_data, im_data, param, val, vis_posterior, im_posterior, 
                    all_values, all_vis_posteriors, all_im_posteriors, fixed_kw):
@@ -128,7 +137,7 @@ def make_plot_five(vis_data, im_data, param, val, vis_posterior, im_posterior,
     #jobfs = None
     if jobfs == None:
         jobfs = ''
-    directory = jobfs+param+'_'+str(val)
+    directory = jobfs+'/'+param+'_'+str(val)
 
 
     if not os.path.isfile('DATA.fits'):
@@ -146,12 +155,13 @@ def make_plot_five(vis_data, im_data, param, val, vis_posterior, im_posterior,
     cubes = image_model(params, vis_data, directory, fixed_kw, modeltype='MCFOST')
 
     data_cube = im_data
-    im_model = directory+'/data_CO/'
-    im_resid = directory+'/data_CO/'
+    reimaged_cube = cubes[0]
     vis_model = cubes[1]
     vis_resid = cubes[2]
+    modeldir = directory+'/data_CO/'
+    
 
-    cubes = [data_cube, im_model, im_resid, vis_model, vis_resid]
+    cubes = [reimaged_cube, vis_model, vis_resid, data_cube, modeldir]
 
     plot_name = construct_plot_lineprofile_five(param, cubes, val, vis_posterior, im_posterior, 
                                                 all_values, all_vis_posteriors, all_im_posteriors)
@@ -279,6 +289,58 @@ def construct_plot(param, cubes, val, posterior, values, posteriors):
     return plot_name
 
 
+def get_line_profile_mcfost(data, model):
+    beam_area = data.bmin * data.bmaj * np.pi / (4.0 * np.log(2.0))
+    pix_area = data.pixelscale**2
+    velocities = data.velocity
+    datalines = data.image * pix_area/beam_area
+    datalines[np.isnan(datalines)] = 0
+
+    flux_data = []
+    for chan in datalines:
+        flux_data.append(np.sum(chan))
+
+    flux_model = []
+    line = np.sum(model.lines[:, :, :], axis=(1, 2))
+
+    for vel in velocities:
+        iv = np.abs(model.velocity - vel).argmin()
+        flux_model.append(line[iv])
+    
+    return velocities, flux_data, flux_model
+
+
+def get_line_profile_fits(data, model):
+    cube_data = casa.Cube(data+'.fits')
+    cube_model = casa.Cube(model+'.fits')
+
+    beam_area = cube_data.bmin * cube_data.bmaj * np.pi / (4.0 * np.log(2.0))
+    pix_area = cube_data.pixelscale**2
+    velocities = cube_data.velocity
+    datalines = cube_data.image * pix_area/beam_area
+    datalines[np.isnan(datalines)] = 0
+
+    flux_data = []
+    for chan in datalines:
+        flux_data.append(np.sum(chan))
+
+
+    beam_area = cube_model.bmin * cube_model.bmaj * np.pi / (4.0 * np.log(2.0))
+    pix_area = cube_model.pixelscale**2
+    velocities = cube_model.velocity
+    datalines = cube_model.image * pix_area/beam_area
+    datalines[np.isnan(datalines)] = 0
+
+    flux_model = []
+    for chan in datalines:
+        flux_model.append(np.sum(chan))
+    
+    return velocities, flux_data, flux_model
+    
+
+
+
+
 
 def construct_plot_lineprofile_five(param, cubes, val, vis_posterior, im_posterior, 
                                                 values, vis_posteriors, im_posteriors):
@@ -311,32 +373,29 @@ def construct_plot_lineprofile_five(param, cubes, val, vis_posterior, im_posteri
     ax_likelihood2.set_ylabel('Im log posterior', color='blue')
 
     #line profiles
-    data = casa.Cube(cubes[0])
-    beam_area = data.bmin * data.bmaj * np.pi / (4.0 * np.log(2.0))
-    pix_area = data.pixelscale**2
-    velocities = data.velocity
-    datalines = data.image * pix_area/beam_area
-    datalines[np.isnan(datalines)] = 0
 
-    flux_data = []
-    flux_model = []
+    cube = casa.Cube(cubes[3])
+    model = mcfost.Line(cubes[4])
+    if cube.nx != model.nx:
+        print('Need to rescale cube!')
+        cube = casa.Cube(cubes[3], zoom=model.nx/cube.nx)
 
-    for chan in datalines:
-        flux_data.append(np.sum(chan))
-    for chan in modellines:
-        flux_model.append(np.sum(chan))
+    velocities, flux_data, flux_model = get_line_profile_mcfost(cube, model)
+    vis_velocities, flux_vis_data, flux_vis_model = get_line_profile_fits(cubes[0], cubes[1])
 
+    
     ax_lineprofile.plot(velocities, flux_data, label='Image Data')
     ax_lineprofile.plot(velocities, flux_model, label='Image Model')
     ax_lineprofile.plot(vis_velocities, flux_vis_data, label='Vis Data')
     ax_lineprofile.plot(vis_velocities, flux_vis_model, label='Vis Model')
+    ax_lineprofile.legend()
     ax_lineprofile.set_title('Line Profiles')
     ax_lineprofile.set_xlabel('Velocity (km/s)')
     ax_lineprofile.set_ylabel('Flux (Jy)')
 
     # Cubes
 
-    for ia in range(len(cubes)):
+    for ia in range(3):
 
         # Load the cube and header data
         hdu = fits.open(cubes[ia]+'.fits')
@@ -402,17 +461,64 @@ def construct_plot_lineprofile_five(param, cubes, val, vis_posterior, im_posteri
                 vstr = pref+'%.2f' % (1e-3 * vv[j])
                 ax.text(0.97, 0.08, vstr, transform=ax.transAxes, ha='right',
                         va='center', fontsize=7, color='w')
-            if np.logical_and(ia == 2, i == 0):
-                ax.set_xlabel('RA offset  ($^{\prime\prime}$)')
-                ax.set_ylabel('DEC offset  ($^{\prime\prime}$)')
-                ax.spines['right'].set_visible(False)
-                ax.spines['top'].set_visible(False)
-            else:
-                ax.axis('off')
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax.set_xticklabels([])
-                ax.set_yticklabels([])
+            # if np.logical_and(ia == 2, i == 0):
+            #     ax.set_xlabel('RA offset  ($^{\prime\prime}$)')
+            #     ax.set_ylabel('DEC offset  ($^{\prime\prime}$)')
+            #     ax.spines['right'].set_visible(False)
+            #     ax.spines['top'].set_visible(False)
+            # else:
+            ax.axis('off')
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+
+    # calculate residuals (image plane)
+    im_velocities = vv/1e3
+    beam_area = cube.bmin * cube.bmaj * np.pi / (4.0 * np.log(2.0))
+    pix_area = cube.pixelscale**2
+    model_chans = []
+    data_chans = []
+    residuals = mcfost.Line(cubes[4])
+    datalines = cube.image*pix_area/beam_area
+    datalines[np.isnan(datalines)] = 0
+    for vel in im_velocities:
+        iv_data = np.abs(cube.velocity - vel).argmin()
+        iv_model = np.abs(model.velocity - vel).argmin()
+        model_chans.append(model.lines[iv_model])
+        data_chans.append(datalines[iv_data])
+    residuals.lines = np.array(data_chans) - np.array(model_chans)
+    residuals.velocity = im_velocities
+
+    # Plotting image plane model and residual in rows 4 and 5
+    fmin= 0
+    fmax = 80
+    colorbar=False
+    lim = 2.5
+    limits = [lim, -lim, -lim, lim]
+    no_ylabel = False
+
+    for i in range(nchans):
+        if i !=0:
+            no_ylabel=True
+        if i == 6:
+            colorbar=False
+        if i != 3:
+            no_xlabel=True
+        else:
+            no_xlabel=False
+        model.plot_map(ax=axs[3, i], v=im_velocities[i], bmaj=cube.bmaj, bmin=cube.bmin, bpa=cube.bpa,
+                       fmin=fmin, fmax=fmax, Tb=True, cmap='cmr.cosmic', colorbar=False, per_beam=True, limits=limits, 
+                       no_xlabel=True, no_xticks=True, no_ylabel=True, no_yticks=True)
+        residuals.plot_map(ax=axs[4, i], v=im_velocities[i], bmaj=cube.bmaj, bmin=cube.bmin, bpa=cube.bpa,
+                       fmin=-0.1, fmax=0.1, Tb=False, cmap='RdBu', colorbar=False, per_beam=True, limits=limits, 
+                       no_xlabel=no_xlabel, no_xticks=True, no_ylabel=no_ylabel, no_yticks=True)
+        
+    axs[3, 0].text(0.02, 0.90, lbls_5[3], transform=ax.transAxes, ha='left',
+                va='center', style='italic', fontsize=8, color='w')
+    axs[4, 0].text(0.02, 0.90, lbls_5[4], transform=ax.transAxes, ha='left',
+                va='center', style='italic', fontsize=8, color='w')
+
 
     # colorbar
     cbax = fig.add_axes([fr+0.01, 0.3825, 0.02, ((ft-fb)/8 * 5)-0.01])

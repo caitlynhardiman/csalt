@@ -33,10 +33,11 @@ tclean_kw = {'imsize': 1500, 'start': '4.5km/s', 'width': '0.5km/s',
              'scales': [0, 10, 30, 60], 'niter': 0,
              'robust': 1.0, 'threshold': '3mJy', 'uvtaper': '0.04arcsec'}
 
-# tclean_kw = {'imsize': 1024, 'start': '4.5km/s', 'width': '0.5km/s',
-#              'nchan': 7, 'restfreq': '345.796GHz', 'cell': '0.0135arcsec',
-#              'scales': [0, 10, 30, 60], 'niter': 100,
-#              'robust': 1.0, 'threshold': '3mJy', 'uvtaper': '0.04arcsec'}   
+tclean_kw = {'imsize': 1500, 'start': '4.5km/s', 'width': '0.5km/s',
+             'nchan': 7, 'restfreq': '345.796GHz', 'cell': '0.01arcsec',
+             'scales': [0, 5, 15, 35, 100], 'niter': 1000,
+             'robust': 1.0, 'threshold': '3mJy', 'uvtaper': '0.04arcsec',
+             'gridder': 'mosaic', 'perchanweightdensity': False}  
 
 print(tclean_kw)          
 
@@ -63,7 +64,9 @@ def image_model(params, data, fixed_kw, directory, modeltype):
     cm = model(modeltype)
     # Calculate a model dictionary; write it to model and residual MS files
     print("Model Dictionary")
+    os.environ["OMP_NUM_THREADS"] = "1"
     mdict = cm.modeldict(ddict, params, kwargs=fixed_kw)
+    os.environ["OMP_NUM_THREADS"] = "8"
     write_MS(mdict, outfile=directory+'/model/DMTau_MODEL_'+pool_id+'.ms')
     write_MS(mdict, outfile=directory+'/residual/DMTau_RESID_'+pool_id+'.ms', resid=True)
     print('Made dictionary!')
@@ -331,10 +334,10 @@ def construct_plot(pars, cubes, likelihood, directory, iteration):
 
     return plot_name
 
-def best_model(h5file, data, directory, fixed_kwargs):
+def best_model(h5file, data, directory, fixed_kwargs, visibility=True, params='all'):
 
     filename = h5file
-    reader = emcee.backends.HDFBackend(filename)
+    reader = emcee.backends.HDFBackend(filename, read_only=True)
     all_samples = reader.get_chain(discard=0, flat=False)
     logpost_samples = reader.get_log_prob(discard=0, flat=False)
     best_model_logprob = -np.inf
@@ -355,7 +358,117 @@ def best_model(h5file, data, directory, fixed_kwargs):
     # check that I can retrieve it
 
     # make plot
-    make_plot(best_params, data, directory, fixed_kwargs, likelihood=best_likelihood, iteration=i)
+    if visibility:
+        make_plot(best_params, data, directory, fixed_kwargs, likelihood=best_likelihood, iteration=i)
+    else:
+        make_plot_image_plane(best_params, imagecube='/home/chardima/runs/DM_Tau_12CO_beam0.15_28ms_3sigma.clean.image.fits', iteration=i, fixed_kwargs=fixed_kwargs, param_names=params)
+    
+    return
+
+def make_plot_image_plane(params, imagecube, iteration, fixed_kwargs, param_names):
+
+    # Make model using best params - can use parametric disc?
+    pfile = 'parametric_disk_MCFOST'
+    if not os.path.exists(pfile+'.py'):
+        print('The prescription '+pfile+'.py does not exist.  Exiting.')
+        sys.exit()
+    pd = importlib.import_module(pfile) 
+
+    cropped_cube = 'cropped_exoALMA.fits'
+    if not os.path.exists(cropped_cube):
+        data = casa.Cube(imagecube)
+        data.cutout(filename=cropped_cube, FOV=10, vmin=4, vmax=8)
+    data = casa.Cube(cropped_cube)
+
+    check_para_matches_data('csalt.para', data)
+
+    if param_names == 'all':
+        inc, m, h, rc, psi, PA, dust_a, vturb, gas_mass, gasdust_ratio = params
+        velax = np.array([4500, 5000, 5500, 6000, 6500, 7000, 7500])
+        cfg_dict = fixed_kwargs['cfg_dict']
+        vsyst = cfg_dict['vsyst']
+        model, directory = pd.write_run_mcfost(velax, inc, m, h, rc, psi, PA, dust_a, vturb, gas_mass, gasdust_ratio, vsyst, ozstar=False)
+    elif param_names == 'no vturb':
+        inc, m, h, rc, psi, PA, dust_a, gas_mass, gasdust_ratio = params
+        velax = np.array([4500, 5000, 5500, 6000, 6500, 7000, 7500])
+        cfg_dict = fixed_kwargs['cfg_dict']
+        vsyst = cfg_dict['vsyst']
+        model, directory = pd.write_run_mcfost(velax, inc, m, h, rc, psi, PA, dust_a, gas_mass, gasdust_ratio, vsyst, ozstar=False)
+    else:
+        print('not recognised!')
+        return 
+
+
+    beam_area = data.bmin * data.bmaj * np.pi / (4.0 * np.log(2.0))
+    pix_area = data.pixelscale**2
+    datalines = data.image
+    #datalines = data.image * pix_area/beam_area
+    datalines[np.isnan(datalines)] = 0
+    velocities = model.velocity
+    data_chans = []
+    model_chans = []
+    flux_data = []
+    flux_model = []
+    for vel in velocities:
+        iv = np.abs(data.velocity - vel).argmin()
+        data_chans.append(datalines[iv])
+        flux_data.append(np.sum(datalines[iv]))
+        iv_m = np.abs(model.velocity - vel).argmin()
+        print(model.velocity[iv_m])
+        model_chans.append(model.lines[iv_m])
+        flux_model.append(np.nansum(model.lines[iv_m]))
+    
+    residuals = mcfost.Line(directory+'/data_CO')
+    residuals.lines = np.array(data_chans) #-0*np.array(model_chans)
+    #beam_for_model = np.sqrt((residuals.pixelscale/data.pixelscale)**2 * data.bmin * data.bmaj)
+
+    print(model.pixelscale)
+    print(residuals.pixelscale)
+    print(data.pixelscale)
+
+    # Plotting arguments
+    fmax = 0.05
+    cmap = 'Blues'
+    fmin = 0
+    colorbar = False
+    vlabel_color = 'black'
+    lim = 6.99
+    limits = [lim, -lim, -lim, lim]
+    no_ylabel = False
+
+    # Make plot
+    fig, axs = plt.subplots(3, 7, figsize=(17, 6), sharex='all', sharey='all')
+    plt.subplots_adjust(wspace=0.0, hspace=0.0)
+    for i in range(7):
+        if i != 0:
+            no_ylabel = True
+        if i == 6:
+            colorbar = True
+        if i != 3:
+            no_xlabel = True
+        else:
+            no_xlabel = False
+        data.plot(ax=axs[0, i], v=velocities[i], fmin=fmin, fmax=fmax, cmap=cmap, colorbar=colorbar, no_vlabel=False, vlabel_color='black', limits=None, no_xlabel=True, no_ylabel=True)
+        axs[0, i].get_xaxis().set_visible(False)
+        model.plot_map(ax=axs[1, i], v=velocities[i],  bmaj=data.bmaj, bmin=data.bmin, bpa=data.bpa, fmin=fmin, fmax=fmax, cmap=cmap, colorbar=colorbar, per_beam=True, limits=None, no_xlabel=True, no_ylabel=no_ylabel, no_vlabel=False, no_xticks=True)
+        convolved = model.last_image
+        residuals.lines[i] = np.array(data_chans[i]) - np.array(convolved)
+        residuals.plot_map(ax=axs[2, i], v=velocities[i],  fmin=-fmax, fmax=fmax, cmap='RdBu', colorbar=colorbar, limits=None, no_ylabel=True, no_vlabel=False, no_xlabel=no_xlabel)
+
+
+    fig.suptitle('Visibility Image Plane Best '+str(iteration))
+    plt.savefig("imageplane_best_"+str(iteration)+".png", bbox_inches="tight", pad_inches=0.1, dpi=300, transparent=False)
+
+    figure = plt.figure()
+    plt.plot(velocities, flux_data, label='data')
+    plt.plot(velocities, flux_model, label='model')
+    plt.xlabel('Velocities (km/s)')
+    plt.ylabel('Flux (Jy)')
+    plt.title('Line profile - Iteration '+str(iteration))
+    plt.savefig('test.png')
+    #plt.savefig('lineprofile'+str(iteration)+'.png', dpi=300)
+    plt.clf()
+
     return
 
 
@@ -388,7 +501,7 @@ def worst_model(h5file, data, directory, fixed_kwargs):
 def median_model(h5file, data, directory, fixed_kwargs):
 
     filename = h5file
-    reader = emcee.backends.HDFBackend(filename)
+    reader = emcee.backends.HDFBackend(filename, read_only=True)
     all_samples = reader.get_chain(discard=0, flat=False)
     latest = all_samples[-1]
     latest= np.transpose(latest)
@@ -403,3 +516,46 @@ def median_model(h5file, data, directory, fixed_kwargs):
     # make plot
     make_plot(median_params, data, directory, fixed_kwargs)
     return
+
+
+def best_100_models(h5file, fixed_kwargs, params='all'): 
+
+    filename = h5file
+    reader = emcee.backends.HDFBackend(filename, read_only=True)
+    all_samples = reader.get_chain(discard=0, flat=True)
+    logpost_samples = reader.get_log_prob(discard=0, flat=True)
+
+    sorted_unique, unique_indices = np.unique(logpost_samples, return_index=True)
+    top_100 = sorted_unique[-100:]
+    top_100_index = unique_indices[-100:]
+
+    parameters = []
+    likelihoods = []
+
+    for i in range(100):
+        index = top_100_index[i]
+        parameters.append(all_samples[index])
+        likelihoods.append(logpost_samples[index])
+
+    for i in range(100):
+        make_plot_image_plane(params=parameters[i], imagecube='/home/chardima/runs/DM_Tau_12CO_beam0.15_28ms_3sigma.clean.image.fits', iteration=i, fixed_kwargs=fixed_kwargs, param_names=params)
+
+
+    return
+
+
+def check_para_matches_data(parafile, data):
+
+    para = mcfost.Params(parafile)
+    model_FOV = para.map.size/para.map.distance
+    if data.FOV != model_FOV:
+        size = data.FOV*para.map.distance
+        print('Size should be '+str(size)+' but was '+str(para.map.size))
+        para.map.size = size
+
+    if data.nx != para.map.nx:
+        print('Npix should be '+str(data.nx)+' but was '+str(para.map.nx))
+        para.map.nx = data.nx
+        para.map.ny = data.ny
+
+    para.writeto(parafile)

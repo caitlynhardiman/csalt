@@ -17,6 +17,7 @@ from vis_sample import vis_sample
 from vis_sample.classes import SkyImage
 from multiprocess.pool import Pool
 from math import isnan
+import matplotlib.pyplot as plt
 
 
 """
@@ -90,17 +91,13 @@ class model:
         Generate a cube 
     """
     def cube(self, velax, pars, 
-             restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, cfg_dict={}, vsyst=None, directory=None):
+             restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, cfg_dict={}):
 
         # Parse inputs
         if isinstance(velax, list): 
             velax = np.array(velax)
         
-        if self.prescription=='MCFOST':
-            fixed = restfreq, FOV, Npix, dist, cfg_dict, vsyst, directory
-        else:
-            fixed = restfreq, FOV, Npix, dist, cfg_dict
-
+        fixed = restfreq, FOV, Npix, dist, cfg_dict
 
         # Load the appropriate prescription
         pfile = 'parametric_disk_'+self.prescription
@@ -179,10 +176,6 @@ class model:
             kw['SRF'] = 'ALMA'
         if 'cfg_dict' not in kw:
             kw['cfg_dict'] = {}
-        if 'vsyst' not in kw:
-            kw['vsyst'] = None
-        if 'directory' not in kw:
-            kw['directory'] = None
         if 'param' not in kw:
             kw['param'] = None
 
@@ -204,8 +197,6 @@ class model:
                                                doppcorr=kw['doppcorr'], 
                                                SRF=kw['SRF'],
                                                cfg_dict=kw['cfg_dict'],
-                                               vsyst=kw['vsyst'],
-                                               directory=kw['directory'],
                                                param=kw['param'])
             return m_
         else:
@@ -222,8 +213,6 @@ class model:
                                                 doppcorr=kw['doppcorr'],
                                                 SRF=kw['SRF'],
                                                 cfg_dict=kw['cfg_dict'],
-                                                vsyst=kw['vsyst'],
-                                                directory=kw['directory'],
                                                 param=kw['param'])
             return p_, n_
 
@@ -234,7 +223,7 @@ class model:
                  restfreq=230.538e9, FOV=5.0, Npix=256, dist=150, chpad=2, 
                  Nup=None, noise_inject=None, doppcorr='approx', SRF='ALMA',
                  gcf_holder=None, corr_cache=None, return_holders=False,
-                 cfg_dict={}, vsyst=None, directory=None, icube=None, param=None):
+                 cfg_dict={}, icube=None, param=None):
 
         """ Prepare the spectral grids: format = [timestamps, channels] """
         # Pad the LSRK frequencies
@@ -282,6 +271,7 @@ class model:
 
         # *Exact* Doppler correction calculation
         if doppcorr == 'exact':
+            print('exact')
             for itime in range(dset.nstamps):
                 # track the steps
                 print('timestamp '+str(itime+1)+' / '+str(dset.nstamps))
@@ -290,8 +280,7 @@ class model:
                 if icube is None:
                     icube = self.cube(vel[itime,:], pars, restfreq=restfreq,
                                       FOV=FOV, Npix=Npix, dist=dist, 
-                                      cfg_dict=cfg_dict, vsyst=vsyst,
-                                      directory=directory)
+                                      cfg_dict=cfg_dict)
                     if isinstance(icube, dict):
                         image_lnl = icube['image_lnl']
                         icube = icube['cube']
@@ -301,7 +290,7 @@ class model:
                 ixh = np.max(np.where(dset.tstamp == itime)) + 1
 
                 # sample the FFT on the (u, v) spacings
-                mvis = vis_sample(imagefile=icube, 
+                mvis = vis_sample(imagefile=copy.deepcopy(icube), 
                                   uu=dset.ulam[ixl:ixh], vv=dset.vlam[ixl:ixh],
                                   gcf_holder=gcf_holder, corr_cache=corr_cache,
                                   mu_RA=mu_RA, mu_DEC=mu_DEC, 
@@ -320,24 +309,23 @@ class model:
             # make a cube
             if icube is None:
                 icube = self.cube(v_model, pars, restfreq=restfreq,
-                                  FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict,
-                                  vsyst=vsyst, directory=directory)
+                                  FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict)
                 if isinstance(icube, dict):
                     image_lnl = icube['image_lnl']
                     icube = icube['cube']
 
             # sample the FFT on the (u, v) spacings
             if return_holders:
-                mvis, gcf, corr = vis_sample(imagefile=icube, 
+                mvis, gcf, corr = vis_sample(imagefile=copy.deepcopy(icube), 
                                              uu=dset.ulam, vv=dset.vlam,
                                              mu_RA=mu_RA, mu_DEC=mu_DEC,
                                              return_gcf=True, 
                                              return_corr_cache=True,
                                              mod_interp=False)
-
+                
                 return mvis.T, gcf, corr, icube, image_lnl
             else:
-                mvis = vis_sample(imagefile=icube, uu=dset.ulam, vv=dset.vlam, 
+                mvis = vis_sample(imagefile=copy.deepcopy(icube), uu=dset.ulam, vv=dset.vlam,
                                   gcf_holder=gcf_holder, corr_cache=corr_cache,
                                   mu_RA=mu_RA, mu_DEC=mu_DEC, 
                                   mod_interp=False).T
@@ -359,15 +347,14 @@ class model:
             if icube is None:
                 icube = self.cube(vel[0,:], pars, restfreq=restfreq,
                               FOV=FOV, Npix=Npix, 
-                              dist=dist, cfg_dict=cfg_dict,
-                              vsyst=vsyst, directory=directory)
+                              dist=dist, cfg_dict=cfg_dict)
                 if isinstance(icube, dict):
                     image_lnl = icube['image_lnl']
                     icube = icube['cube']
 
             # sample the FFT on the (u, v) spacings
             if return_holders:
-                mvis, gcf, corr = vis_sample(imagefile=icube, 
+                mvis, gcf, corr = vis_sample(imagefile=copy.deepcopy(icube), 
                                              uu=dset.ulam, vv=dset.vlam,
                                              mu_RA=mu_RA, mu_DEC=mu_DEC,
                                              return_gcf=True,
@@ -375,7 +362,7 @@ class model:
                                              mod_interp=False)
                 return mvis.T, gcf, corr, icube, image_lnl
             else:
-                mvis = vis_sample(imagefile=icube, uu=dset.ulam, vv=dset.vlam,
+                mvis = vis_sample(imagefile=copy.deepcopy(icube), uu=dset.ulam, vv=dset.vlam,
                                   gcf_holder=gcf_holder, corr_cache=corr_cache,
                                   mu_RA=mu_RA, mu_DEC=mu_DEC,
                                   mod_interp=False).T
@@ -419,7 +406,6 @@ class model:
             mvis_n = mvis_noisy[:,:,:,0] + 1j * mvis_noisy[:,:,:,1]
             mset_n = dataset(dset.um, dset.vm, mvis_n, dset.wgt, dset.nu_TOPO,
                              dset.nu_LSRK, dset.tstamp)
-            
             return (mset_p, icube, image_lnl), (mset_n, icube, image_lnl)
 
 
@@ -686,6 +672,10 @@ class model:
                         else:
                             ixh = ixl + min_nchan
 
+                print('Original shape = ', data.vis.shape)
+                print('Cuts for channels (fitting 3 to 9 km/s) = ', ixl, ixh)
+
+
                 # Clip the data to cover only the frequencies of interest
                 inu_TOPO = data.nu_TOPO[ixl:ixh]
                 inu_LSRK = data.nu_LSRK[:,ixl:ixh]
@@ -867,13 +857,9 @@ class model:
     def sample_posteriors(self, msfile, vra=None, vcensor=None, kwargs=None,
                           restfreq=230.538e9, chbin=1, well_cond=300,
                           Nwalk=75, Ninits=20, Nsteps=1000, 
-                          outpost='stdout.h5', append=False, Nthreads=6, param=None,
-                          mcmc='emcee'):
-
-        if mcmc=='emcee':
-            import emcee
-        else:
-            import zeus
+                          outpost='stdout.h5', append=False, Nthreads=6, param=None):
+        
+        import emcee
         from multiprocessing import Pool
         # if Nthreads > 1:
         #     os.environ["OMP_NUM_THREADS"] = "1"
@@ -912,8 +898,6 @@ class model:
 
         # Acquire and store the GCF and CORR caches for iterative sampling
         print('Caching...')
-        if 'vsyst' not in kwargs:
-            kwargs['vsyst'] = None
         infdata = self.cache(p0, infdata, restfreq, kwargs)
 
         # Declare the data and kwargs as globals (for speed in pickling)
@@ -931,6 +915,8 @@ class model:
             kw['Npix'] = 256
         if 'dist' not in kw:
             kw['dist'] = 150.
+        if 'cfg_dict' not in kw:
+            kw['cfg_dict'] = {}
         if 'chpad' not in kw:
             kw['chpad'] = 2
         if 'Nup' not in kw:
@@ -941,19 +927,8 @@ class model:
             kw['doppcorr'] = 'approx'
         if 'SRF' not in kw:
             kw['SRF'] = 'ALMA'
-        if 'vsyst' not in kw:
-            kw['vsyst'] = None
 
-        if mcmc=='zeus':
-            print('Running mcmc with zeus')
-            with Pool(processes=Nthreads) as pool:
-                isamp = zeus.EnsembleSampler(Nwalk, Ndim, self.log_posterior,
-                                              pool=pool, verbose=True)
-                cb0 = zeus.callbacks.SaveProgressCallback(filename=outpost, ncheck=100)
-                t0 = time.time()
-                isamp.run_mcmc(p0, Nsteps, progress=True, callbacks=[cb0]) 
-            t1 = time.time()
-        elif not append:
+        if not append:
             # Initialize the MCMC walkers
             print('Initialising walkers')
             with Pool(processes=Nthreads) as pool:
@@ -1032,15 +1007,17 @@ class model:
         for i in range(infdata['Nobs']):
             if self.prescription != 'MCFOST' or i==0:
                 icube = None
-            _, gcf, corr, icube, image_lnl = self.modelset(dset=infdata[str(i)], pars=p0[0], 
+            _, gcf, corr, _icube, image_lnl = self.modelset(dset=infdata[str(i)], pars=p0[0], 
                                          restfreq=restfreq, 
                                          FOV=kwargs['FOV'],
                                          Npix=kwargs['Npix'], 
                                          dist=kwargs['dist'],
-                                         vsyst=kwargs['vsyst'],
+                                         cfg_dict=kwargs['cfg_dict'],
                                          return_holders=True,
-                                         icube=icube,
+                                         icube=copy.deepcopy(icube),
                                          param=self.param)
+            if icube is None:
+                icube = _icube
             infdata['gcf_'+str(i)] = gcf
             infdata['corr_'+str(i)] = corr
     
@@ -1071,13 +1048,14 @@ class model:
     """
         Function to calculate a log-likelihood.
     """
-    def log_likelihood(self, theta, fdata=None, kwargs=None, model_vis=None):
+    def log_likelihood(self, theta, fdata=None, kwargs=None, model_vis=None, plot=False):
 
         # Loop over observations to get likelihood
         logL = 0
         icube = None
         print(fdata['Nobs'])
         for i in range(fdata['Nobs']):
+            #t0 = time.time()
 
             # Get the data 
             _data = fdata[str(i)]
@@ -1087,14 +1065,49 @@ class model:
                 icube = None
 
             # Calculate the model
-            _mdl, icube, image_lnl = self.modelset(_data, theta, restfreq=kwargs['restfreq'],
+            _mdl, _, image_lnl = self.modelset(_data, theta, restfreq=kwargs['restfreq'],
                                  FOV=kwargs['FOV'], Npix=kwargs['Npix'], 
-                                 dist=kwargs['dist'], chpad=kwargs['chpad'],
+                                 dist=kwargs['dist'], cfg_dict=kwargs['cfg_dict'],
+                                 chpad=kwargs['chpad'],
                                  doppcorr=kwargs['doppcorr'], 
                                  SRF=kwargs['SRF'], 
                                  gcf_holder=fdata['gcf_'+str(i)],
                                  corr_cache=fdata['corr_'+str(i)], 
-                                 vsyst=kwargs['vsyst'], directory=kwargs['directory'], icube=icube, param=self.param)
+                                 icube=copy.deepcopy(icube), param=self.param)
+            
+            #t1 = time.time()
+            #print('Time for EB '+str(i)+' is '+str(t1-t0))
+        
+            if icube is None:
+                icube = _
+        
+            
+            # plot next to each other
+            if plot:
+                fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), sharex=True, sharey=True)
+                uv_dist = np.sqrt(_data.um**2 + _data.vm**2)
+                data_pol1 = _data.vis[0]
+                data_pol2 = _data.vis[1]
+                model_pol1 = _mdl.vis[0]
+                model_pol2 =  _mdl.vis[1]
+                dp1_av = np.mean(data_pol1, axis=0)
+                dp2_av = np.mean(data_pol2, axis=0)
+                mp1_av = np.mean(model_pol1, axis=0)
+                mp2_av = np.mean(model_pol2, axis=0)
+                axs[0].scatter(uv_dist, dp1_av, color='red', label='Pol 1')
+                axs[0].scatter(uv_dist, dp2_av, color='purple', label='Pol 2')
+                axs[0].set_xlabel('UV distance')
+                axs[0].set_ylabel('Visibility')
+                axs[0].set_title('Data')
+                axs[1].scatter(uv_dist, mp1_av, color='red', label='Pol 1')
+                axs[1].scatter(uv_dist, mp2_av, color='purple', label='Pol 2')
+                axs[1].set_xlabel('UV distance')
+                axs[1].set_ylabel('Visibility')
+                axs[1].set_title('Model')
+                plt.suptitle('EB ' + str(i))
+                plt.savefig('plotting_vis_'+str(i)+'.png')
+
+
 
             # Spectrally bin the model visibilities if necessary
             # **technically wrong, since the weights are copied like this; 
@@ -1114,19 +1127,23 @@ class model:
                 resid = np.hstack(np.absolute(model_vis[str(i)] - mvis))
             var = np.hstack(_data.wgt)
 
-            #unweighted = np.ones(var.shape)
-            #var = unweighted
-
-
             # Compute the log-likelihood (** still needs constant term)
             Cinv = fdata['invcov_'+str(i)]
-            print(Cinv.shape)
             Cinv = np.identity(Cinv.shape[0])
-            # Cinv = np.eye(len(Cinv))
-            logL += -0.5 * np.tensordot(resid, np.dot(Cinv, var * resid))
+            cfg_dict=kwargs['cfg_dict']
+            if cfg_dict.get('eb_contribution') is not None:
+                print('cov matrix back and lnL0!!')
+                constant_term = fdata['lnL0_'+str(i)]
+                Cinv = fdata['invcov_'+str(i)]
+                print('EB '+str(i)+': '+str(-0.5 * np.tensordot(resid, np.dot(Cinv, var * resid))-constant_term))
+                logL += -0.5 * np.tensordot(resid, np.dot(Cinv, var * resid)) - constant_term
+            else:
+                logL += -0.5 * np.tensordot(resid, np.dot(Cinv, var * resid))
 
         if isnan(logL):
             print(theta)
+
+        print(logL)
 
         return logL, image_lnl
     
@@ -1366,8 +1383,6 @@ class model:
 
         # Acquire and store the GCF and CORR caches for iterative sampling
         print('Caching...')
-        if 'vsyst' not in kwargs:
-            kwargs['vsyst'] = None
         infdata = self.cache(p0, infdata, restfreq, kwargs)
 
         # Declare the data and kwargs as globals (for speed in pickling)
@@ -1385,6 +1400,8 @@ class model:
             kw['Npix'] = 256
         if 'dist' not in kw:
             kw['dist'] = 150.
+        if 'cfg_dict' not in kw:
+            kw['cfg_dict'] = {}
         if 'chpad' not in kw:
             kw['chpad'] = 2
         if 'Nup' not in kw:
@@ -1395,8 +1412,6 @@ class model:
             kw['doppcorr'] = 'approx'
         if 'SRF' not in kw:
             kw['SRF'] = 'ALMA'
-        if 'vsyst' not in kw:
-            kw['vsyst'] = None
 
         # Initialize the MCMC walkers
         backend = emcee.backends.HDFBackend(outpost)
@@ -1421,6 +1436,6 @@ class model:
 
 def determinant(args):
     ii, jj = args
-    print(ii)
+    #print(ii)
     sgn, lndet = np.linalg.slogdet(scov/_wgt[jj,:,ii])
     return (jj, ii, sgn*lndet)
