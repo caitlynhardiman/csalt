@@ -312,6 +312,7 @@ class model:
                                   FOV=FOV, Npix=Npix, dist=dist, cfg_dict=cfg_dict)
                 if isinstance(icube, dict):
                     image_lnl = icube['image_lnl']
+                    print('316  - ', image_lnl)
                     icube = icube['cube']
 
             # sample the FFT on the (u, v) spacings
@@ -562,8 +563,8 @@ class model:
     """
         Function to parse and package visibility data for inference
     """
-    def fitdata(self, msfile,
-                vra=None, vcensor=None, restfreq=230.538e9, chbin=1, 
+    def fitdata(self, msfile, vra=None, vcensor=None, 
+                vspacing=None, restfreq=230.538e9, chbin=1, 
                 well_cond=300):
 
         # Load the data from the MS file into a dictionary
@@ -672,9 +673,6 @@ class model:
                         else:
                             ixh = ixl + min_nchan
 
-                print('Original shape = ', data.vis.shape)
-                print('Cuts for channels (fitting 3 to 9 km/s) = ', ixl, ixh)
-
 
                 # Clip the data to cover only the frequencies of interest
                 inu_TOPO = data.nu_TOPO[ixl:ixh]
@@ -712,6 +710,25 @@ class model:
                         bcens_chans = np.all(cens_chans.reshape((-1, chbin[i])),
                                          axis=1)
                         bwgt[:,cens_chans == False,:] = 0
+
+
+                 # Select specific channels
+                if vspacing is not None:
+                    if np.abs(vra[1]-vra[0]) % vspacing != 0:
+                        print('Channel range not divisible by spacing factor!')
+                        return
+                    else:
+                        nchans = int((np.abs(vra[0])+np.abs(vra[1]))/(1e3*2) + 1)
+                        vkeep = []
+                        for chan_i in range(nchans):
+                            vkeep.append(int(((np.abs(iv_LSRK[midstamp, :]-(vra[0]+(chan_i*vspacing))).argmin()))))
+
+                        inu_TOPO = inu_TOPO[vkeep]
+                        inu_LSRK = inu_LSRK[:, vkeep]
+                        iv_LSRK = iv_LSRK[:, vkeep]
+                        inchan = inu_LSRK.shape[1]
+                        ivis = ivis[:, vkeep, :]
+                        iwgt = iwgt[:, vkeep, :]
 
                 # Pre-calculate the spectral covariance matrix 
                 # (** note: this assumes the Hanning kernel for ALMA **)
@@ -854,7 +871,7 @@ class model:
     """
         Sample the posteriors.
     """
-    def sample_posteriors(self, msfile, vra=None, vcensor=None, kwargs=None,
+    def sample_posteriors(self, msfile, vra=None, vcensor=None, vspacing=None, kwargs=None,
                           restfreq=230.538e9, chbin=1, well_cond=300,
                           Nwalk=75, Ninits=20, Nsteps=1000, 
                           outpost='stdout.h5', append=False, Nthreads=6, param=None):
@@ -867,7 +884,7 @@ class model:
         # Parse the data into proper format
         print('Fitting data')
         infdata = self.fitdata(msfile, vra=vra, vcensor=vcensor, 
-                               restfreq=restfreq, chbin=chbin, 
+                               vspacing=vspacing, restfreq=restfreq, chbin=chbin, 
                                well_cond=well_cond)
         
         if param is not None:
@@ -1053,7 +1070,7 @@ class model:
         # Loop over observations to get likelihood
         logL = 0
         icube = None
-        print(fdata['Nobs'])
+        image_lnl = None
         for i in range(fdata['Nobs']):
             #t0 = time.time()
 
@@ -1065,7 +1082,7 @@ class model:
                 icube = None
 
             # Calculate the model
-            _mdl, _, image_lnl = self.modelset(_data, theta, restfreq=kwargs['restfreq'],
+            _mdl, _, lnl = self.modelset(_data, theta, restfreq=kwargs['restfreq'],
                                  FOV=kwargs['FOV'], Npix=kwargs['Npix'], 
                                  dist=kwargs['dist'], cfg_dict=kwargs['cfg_dict'],
                                  chpad=kwargs['chpad'],
@@ -1080,6 +1097,8 @@ class model:
         
             if icube is None:
                 icube = _
+            if image_lnl is None:
+                image_lnl = lnl
         
             
             # plot next to each other
@@ -1129,8 +1148,10 @@ class model:
 
             # Compute the log-likelihood (** still needs constant term)
             Cinv = fdata['invcov_'+str(i)]
-            Cinv = np.identity(Cinv.shape[0])
             cfg_dict=kwargs['cfg_dict']
+            if cfg_dict.get('cov_on') is None:
+                print('covariance matrix is off')
+                Cinv = np.identity(Cinv.shape[0])
             if cfg_dict.get('eb_contribution') is not None:
                 print('cov matrix back and lnL0!!')
                 constant_term = fdata['lnL0_'+str(i)]
@@ -1142,8 +1163,6 @@ class model:
 
         if isnan(logL):
             print(theta)
-
-        print(logL)
 
         return logL, image_lnl
     

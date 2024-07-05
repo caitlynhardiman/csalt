@@ -18,6 +18,7 @@ class setup_fit():
                  append: bool = False,
                  param=None,
                  vra_fit=[4.06e3, 8.06e3],
+                 vspacing =None,
                  vcensor=None,
                  nwalk=128,
                  ninits=300,
@@ -41,6 +42,7 @@ class setup_fit():
         
         self.vra_fit = vra_fit
         self.vcensor = vcensor
+        self.vspacing = vspacing
         # I/O
         self.datafile = msfile
         # Inference Setups
@@ -104,7 +106,7 @@ class setup_fit():
         single log likelihood value etc.
         """
         
-        infdata = self.cm.fitdata(self.datafile, vra=self.vra_fit, restfreq=self.nu_rest)
+        infdata = self.cm.fitdata(self.datafile, vra=self.vra_fit, vspacing=self.vspacing, restfreq=self.nu_rest)
         p0 = self.cm.mcfost_priors(self.priors, self.nwalk, self.Ndim)
         infdata = self.cm.cache(p0, infdata, self.nu_rest, self.fixed_kw)
         return infdata
@@ -196,8 +198,8 @@ class setup_fit():
                 for i in range(30):
                     values.append([6*i])
             elif param == 'stellar_mass':
-                for i in range(19):
-                    values.append([0.2 + 0.1*i])
+                for i in range(50):
+                    values.append([0.2 + 0.016*i])
             elif param == 'scale_height':
                 for i in range(20):
                     values.append([10 + i])

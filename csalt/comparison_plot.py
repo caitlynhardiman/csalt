@@ -18,28 +18,19 @@ from astropy.io import fits
 import scipy.constants as sc
 import cmasher as cmr
 
-#  def make_movie(self, backend_file, original_ms, vra_fit=[5.75e3, 6.25e3], nwalk=75, nsteps=100, ninits=10, nthreads=64, niter=100):
 
-#     def likelihood(self, params):
-#         return self.m.get_probability(self.infdata, params)
 
 par_names = ['Inc', 'Mstar', 'h', 'r_c', 'psi', 'PA', 'Dust α', 'Vturb', 'Mgas', 'gd ratio']
 prec = [0.1, 0.01, 0.1, 0.1, 0.001, 0.1, 0.0001, 0.001, 0.0001, 0.1]
 lbls = ['data', 'model', 'residual']
 
-# Define some tclean keywords to be used in all imaging
-tclean_kw = {'imsize': 1500, 'start': '4.5km/s', 'width': '0.5km/s',
-             'nchan': 7, 'restfreq': '345.796GHz', 'cell': '0.01arcsec',
-             'scales': [0, 10, 30, 60], 'niter': 0,
-             'robust': 1.0, 'threshold': '3mJy', 'uvtaper': '0.04arcsec'}
 
 tclean_kw = {'imsize': 1500, 'start': '4.5km/s', 'width': '0.5km/s',
              'nchan': 7, 'restfreq': '345.796GHz', 'cell': '0.01arcsec',
              'scales': [0, 5, 15, 35, 100], 'niter': 1000,
              'robust': 1.0, 'threshold': '3mJy', 'uvtaper': '0.04arcsec',
              'gridder': 'mosaic', 'perchanweightdensity': False}  
-
-print(tclean_kw)          
+        
 
 # Define some Keplerian mask keywords
 kepmask_kw = {'inc': 36.6, 'PA': 155, 'mstar': 0.4, 'dist': 144.5, 'vlsr': 6100, 
@@ -178,7 +169,7 @@ def make_movie(backend_file, data, mode, directory, fixed_kwargs, niter=1, walke
 
 
 
-def make_plot(params, data, directory, fixed_kwargs, likelihood=None, iteration=None, modeltype='MCFOST'):
+def reimage_model(params, data, directory, fixed_kwargs, likelihood=None, iteration=None, modeltype='MCFOST'):
 
     # if likelihood is None:
     #     likelihood = get_likelihood(params, data)
@@ -374,10 +365,10 @@ def make_plot_image_plane(params, imagecube, iteration, fixed_kwargs, param_name
         sys.exit()
     pd = importlib.import_module(pfile) 
 
-    cropped_cube = 'cropped_exoALMA.fits'
+    cropped_cube = '/home/chardima/runs/DM_Tau_cutout_FOV_15.fits'
     if not os.path.exists(cropped_cube):
         data = casa.Cube(imagecube)
-        data.cutout(filename=cropped_cube, FOV=10, vmin=4, vmax=8)
+        data.cutout(filename=cropped_cube, FOV=15, vmin=4, vmax=8)
     data = casa.Cube(cropped_cube)
 
     check_para_matches_data('csalt.para', data)
@@ -465,8 +456,7 @@ def make_plot_image_plane(params, imagecube, iteration, fixed_kwargs, param_name
     plt.xlabel('Velocities (km/s)')
     plt.ylabel('Flux (Jy)')
     plt.title('Line profile - Iteration '+str(iteration))
-    plt.savefig('test.png')
-    #plt.savefig('lineprofile'+str(iteration)+'.png', dpi=300)
+    plt.savefig('lineprofile'+str(iteration)+'.png', dpi=300)
     plt.clf()
 
     return
@@ -559,3 +549,131 @@ def check_para_matches_data(parafile, data):
         para.map.ny = data.ny
 
     para.writeto(parafile)
+
+
+
+def find_best_params(h5file):
+
+    reader = emcee.backends.HDFBackend(h5file, read_only=True)
+    all_samples = reader.get_chain(discard=0, flat=False)
+    logpost_samples = reader.get_log_prob(discard=0, flat=False)
+    best_model_logprob = -np.inf
+
+    for iteration in range(len(all_samples)):
+        for walker in logpost_samples[iteration]:
+            if walker > best_model_logprob:
+                best_model_logprob = walker
+    best_index = np.argwhere(logpost_samples==best_model_logprob)
+    if len(best_index) > 1:
+        best_index = best_index[-1]
+    i, j = best_index
+
+    best_params = all_samples[i][j]
+    best_likelihood = logpost_samples[i][j]
+
+    return best_params, best_likelihood, i
+
+def line_prof_image_plane(params, param_names, likelihood, iteration, directory, prec, vsyst=6.04, imagecube='/home/chardima/runs/DM_Tau_12CO_beam0.15_28ms_3sigma.clean.image.fits'):
+
+    cropped_cube = '/home/chardima/runs/DM_Tau_cutout_FOV_15.fits'
+    if not os.path.exists(cropped_cube):
+        data = casa.Cube(imagecube)
+        data.cutout(filename=cropped_cube, FOV=15, vmin=4, vmax=8)
+    data = casa.Cube(cropped_cube)
+
+    check_para_matches_data('csalt.para', data)
+
+    pfile = 'parametric_disk_MCFOST'
+    if not os.path.exists(pfile+'.py'):
+        print('The prescription '+pfile+'.py does not exist.  Exiting.')
+        sys.exit()
+    pd = importlib.import_module(pfile) 
+
+    if param_names == 'all':
+        param_names = ['inclination', 'stellar_mass', 'scale_height', 'r_c', 'flaring_exp', 
+                       'PA', 'dust_param', 'vturb', 'gas_mass', 'gasdust_ratio']
+    params = convert_to_dict(param_names, params)
+
+    print(params)
+
+    velocities = np.array([4500, 5000, 5500, 6000, 6500, 7000, 7500])
+    model, model_directory = pd.write_run_mcfost(velax=velocities, vsyst=vsyst, ozstar=False, **params)
+
+    # Line profile
+    data_lp = data.get_line_profile()
+    model_lp = np.sum(model.lines[:, :, :], axis=(1, 2))
+
+    figure = plt.figure()
+    plt.plot(data.velocity, data_lp, label='data')
+    plt.plot(model.velocity, model_lp, label='model')
+    plt.xlabel('Velocity (km/s)')
+    plt.ylabel('Flux (Jy)')
+    plt.title('Best Model Line Profile')
+    plt.savefig(directory+'/lineprofile'+str(iteration)+'.png', dpi=300)
+    plt.clf()
+
+
+    # Image Plane Plot
+
+    residuals = mcfost.Line(model_directory+'/data_CO')
+
+    # Plotting arguments
+    fmax = 0.05
+    cmap = 'Blues'
+    fmin = 0
+    colorbar = False
+    vlabel_color = 'black'
+    no_ylabel = False
+    velocities = velocities/1000
+
+    # Make plot
+    fig, axs = plt.subplots(3, 7, figsize=(16, 6), sharex='all', sharey='all')
+    plt.subplots_adjust(wspace=0.15, hspace=0.15)
+    for i in range(7):
+        if i != 0:
+            no_ylabel = True
+            no_yticks = True
+        if i == 6:
+            colorbar = True
+        if i != 3:
+            no_xlabel = True
+        else:
+            no_xlabel = False
+        data.plot(ax=axs[0, i], v=velocities[i], fmin=fmin, fmax=fmax, cmap=cmap, colorbar=colorbar, no_vlabel=False, vlabel_color='black', limits=None, no_xlabel=True, no_ylabel=True)
+        axs[0, i].get_xaxis().set_visible(False)
+        model.unit='Jy/beam'
+        residuals.unit='Jy/beam'
+        model.plot_map(ax=axs[1, i], v=velocities[i],  bmaj=data.bmaj, bmin=data.bmin, bpa=data.bpa, fmin=fmin, fmax=fmax, cmap=cmap, colorbar=colorbar, per_beam=True, limits=None, no_xlabel=True, no_ylabel=no_ylabel, no_vlabel=False, no_xticks=True)
+        convolved = model.last_image
+        data_index = np.argmin(np.abs(data.velocity - velocities[i]))
+        residuals.lines[i] = np.array(data.image[data_index]) - np.array(convolved)
+        residuals.plot_map(ax=axs[2, i], v=velocities[i],  fmin=-fmax, fmax=fmax, cmap='RdBu', colorbar=colorbar, limits=None, no_ylabel=True, no_vlabel=False, no_xlabel=no_xlabel)
+        if i != 0:
+            for j in range(3):
+                axs[j, i].get_yaxis().set_visible(False)
+
+    my_text = '- Parameters -'
+
+    for i in range(len(param_names)):
+        dec_places = np.abs(int(np.log10(prec[i])))
+        if dec_places >= 4:
+            my_text += '\n' + param_names[i] + ' = ' + ('{:.'+str(1)+'e}').format(params[param_names[i]])
+        else:
+            my_text += '\n' + param_names[i] + ' = ' + ('{:.'+str(dec_places)+'f}').format(params[param_names[i]])
+
+    props = dict(boxstyle='round', facecolor='grey', alpha=0.15)
+    axs[0][0].text(-1.98, 0.2, my_text, transform=axs[0][0].transAxes, fontsize=9, horizontalalignment='left', verticalalignment='center', bbox=props)
+    #plt.tight_layout()
+
+    fig.suptitle('Best Model in Image Plane - Likelihood = '+str(likelihood))
+    plt.savefig(directory+"/imageplane_best_"+str(iteration)+".png", bbox_inches="tight", pad_inches=0.1, dpi=300, transparent=False)
+
+
+
+def convert_to_dict(names, values):
+
+    param_dict = {}
+    for i in range(len(names)):
+        param_dict[names[i]] = values[i]
+    
+    return param_dict
