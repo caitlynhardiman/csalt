@@ -9,6 +9,13 @@ import multiprocessing
 from functools import partial
 import pymcfost as mcfost
 import casa_cube as casa
+from scipy.optimize import minimize
+
+
+param_bounds = {
+    'inclination': [0, 180],
+    'stellar_mass': [0, 1]
+}
 
 # Class definition
 class setup_fit():
@@ -25,13 +32,16 @@ class setup_fit():
                  nsteps=5000,
                  nthreads=32,
                  nu_rest=345.796e9,
+                 chbin=1,
                  FOV=6.375,
                  Npix=256,
                  dist=144.5,
                  image_plane=False,
                  data_cube=None, 
                  casa_sim=False,
-                 cfg_dict={}):
+                 cfg_dict={},
+                 attenuate=False, 
+                 diameters=[7, 7, 7, 12, 12, 12, 12, 12, 12]):
         
         if msfile is None:
             print('Need to give an ms file as input!')
@@ -57,6 +67,9 @@ class setup_fit():
         self.Npix = Npix
         self.dist = dist
         self.cfg_dict = cfg_dict
+        self.chbin=chbin
+        self.attenuate=attenuate
+        self.diameters=diameters
 
         if param is not None:
             print('Using param!')
@@ -74,7 +87,10 @@ class setup_fit():
             self.cm.param = self.param
 
         # Define some fixed attributes for the modeling
-        self.fixed_kw = {'restfreq': nu_rest, 'FOV': FOV, 'Npix': Npix, 'dist': dist, 'cfg_dict': cfg_dict} 
+        self.fixed_kw = {'restfreq': nu_rest, 'FOV': FOV, 'Npix': Npix, 'dist': dist, 'cfg_dict': cfg_dict, 'pb_attenuate': attenuate} 
+
+        if self.attenuate:
+            self.fixed_kw['diameters'] = diameters
 
         # Import priors
         print('Initialising priors')
@@ -84,7 +100,7 @@ class setup_fit():
         if image_plane:
             print('Initialising image plane comparison cube')
             from myfittingpackage import image_plane_fit as ipf 
-            image = ipf(datacube=data_cube, distance=144.5, vismode=True, vel_range=vra_fit, npix=512, casa_sim=casa_sim)
+            image = ipf(datacube=data_cube, distance=144.5, vismode=True, vel_range=vra_fit, casa_sim=casa_sim)
             self.cm.image_plane_fit = image           
 
 
@@ -106,13 +122,18 @@ class setup_fit():
         single log likelihood value etc.
         """
         
-        infdata = self.cm.fitdata(self.datafile, vra=self.vra_fit, vspacing=self.vspacing, restfreq=self.nu_rest)
+        infdata = self.cm.fitdata(self.datafile, vra=self.vra_fit, vspacing=self.vspacing, restfreq=self.nu_rest, chbin=self.chbin)
+        if self.attenuate:
+            print('Adding diameters!')
+            for EB in range(infdata['Nobs']):
+                infdata[str(EB)].diameter = self.diameters[EB]
+                print(infdata[str(EB)].diameter)
         p0 = self.cm.mcfost_priors(self.priors, self.nwalk, self.Ndim)
         infdata = self.cm.cache(p0, infdata, self.nu_rest, self.fixed_kw)
         return infdata
     
 
-    def get_probability(self, infdata, theta):
+    def get_probability(self, infdata, theta, uv=None):
         """
         Returns the log probability of a specific theta array fitting the data
         Need to run initialise function first
@@ -144,7 +165,7 @@ class setup_fit():
             kw['SRF'] = 'ALMA'
 
 
-        loglikelihood, im_lnl = self.cm.log_likelihood(theta, fdata=fdata, kwargs=kw)
+        loglikelihood, im_lnl = self.cm.log_likelihood(theta, fdata=fdata, kwargs=kw, plot_brute=True)
 
         priors = importlib.import_module('priors_'+self.priors_prescription)
         lnT = np.sum(priors.logprior(theta)) * fdata['Nobs']
@@ -152,6 +173,58 @@ class setup_fit():
 
         return loglikelihood+lnT
     
+
+    def optimise(self, infdata, initial):
+        """
+        Runs a scipy optimisation to retrieve an initial guess for an MCMC run
+        """
+
+        global fdata
+        global kw
+        fdata = copy.deepcopy(infdata)
+        kw = copy.deepcopy(self.fixed_kw)
+
+                # Populate keywords from kwargs dictionary
+        if 'restfreq' not in kw:
+            kw['restfreq'] = self.nu_rest
+        if 'FOV' not in kw:
+            kw['FOV'] = 5.0
+        if 'Npix' not in kw:
+            kw['Npix'] = 256
+        if 'dist' not in kw:
+            kw['dist'] = 150.
+        if 'chpad' not in kw:
+            kw['chpad'] = 2
+        if 'Nup' not in kw:
+            kw['Nup'] = None
+        if 'noise_inject' not in kw:
+            kw['noise_inject'] = None
+        if 'doppcorr' not in kw:
+            kw['doppcorr'] = 'approx'
+        if 'SRF' not in kw:
+            kw['SRF'] = 'ALMA'
+
+        bounds = self.get_bounds()
+        # POSTERIOR
+        nll = lambda theta: self.cm.log_likelihood(theta, fdata=fdata, kwargs=kw)[0]+590000000
+        solution = minimize(nll, initial, method='L-BFGS-B', bounds=bounds, options={'gtol': 1e-10})
+
+        print('Solution: ', solution.x)
+        print(solution.success)
+        print(solution.message)
+        
+        return solution
+    
+    def get_bounds(self):
+
+        bounds = ()
+        for param in self.param:
+            if param in param_bounds:
+                bounds += (param_bounds[param], )
+            else:
+                raise ValueError(f"Unknown parameter: {param}")
+
+        return bounds
 
     def brute_force(self, data, datacube, single=False):
 
